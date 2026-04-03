@@ -41,7 +41,7 @@ class LLMClient:
 
             completion = llm.new_completion()
             for msg in messages:
-                completion.with_message(msg["role"], msg["content"])
+                completion.with_message(msg["content"], msg["role"])
 
             resp = completion.execute()
             return resp.text
