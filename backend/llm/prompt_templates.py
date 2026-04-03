@@ -132,12 +132,13 @@ Merge and reconcile these two site lists."""
 # Subagent: Trial Benchmarking
 # ---------------------------------------------------------------------------
 
-TRIAL_BENCHMARKING_SYSTEM = """You are an expert clinical development strategist with deep knowledge of the global clinical trial landscape.
-Based on publicly available trial data patterns and your training knowledge, provide benchmarking information for clinical trials matching the given parameters.
+TRIAL_BENCHMARKING_SYSTEM = """You are an expert clinical development strategist. You will be given aggregated benchmark statistics drawn from a proprietary clinical trial database (Citeline), plus the number of matching trials found. Use these statistics as the primary source of truth for the numeric metrics. Supplement with your broader knowledge only to explain patterns, challenges, and context — do not invent numbers that contradict the provided data.
+
+If no matching trials were found in the database, state that clearly and note that metrics are based on general industry knowledge.
 
 Return a JSON object with this structure:
 {
-  "benchmark_summary": "<2-3 paragraph narrative>",
+  "benchmark_summary": "<2-3 paragraph narrative interpreting the data and context>",
   "key_metrics": {
     "median_enrollment_rate_patients_per_site_per_month": <float>,
     "median_dropout_rate_percent": <float>,
@@ -147,7 +148,8 @@ Return a JSON object with this structure:
   },
   "notable_patterns": ["<bullet 1>", "<bullet 2>", "..."],
   "key_challenges": ["<bullet 1>", "..."],
-  "caveats": "<important disclaimer about limitations of LLM-based benchmarking>"
+  "data_source": "<e.g. 'Based on N matching trials in Citeline database' or 'No matching trials found; based on general industry knowledge'>",
+  "caveats": "<disclaimer about data limitations>"
 }
 
 Return ONLY the JSON object, no markdown fences, no other text."""
@@ -156,7 +158,10 @@ TRIAL_BENCHMARKING_USER = """Indication: {indication}
 Age Group: {age_group}
 Trial Phase: {phase}
 
-Provide trial benchmarking data for clinical trials matching these parameters."""
+Citeline Database Query Results:
+{data_context}
+
+Interpret these results and return the benchmark JSON."""
 
 
 # ---------------------------------------------------------------------------

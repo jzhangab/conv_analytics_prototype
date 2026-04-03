@@ -1,0 +1,101 @@
+trial_id,indication,therapeutic_area,phase,age_group,num_sites,num_patients_enrolled,enrollment_rate_pts_per_site_per_month,dropout_rate_pct,screen_failure_rate_pct,total_duration_months,enrollment_duration_months,num_countries,year_started
+T001,NSCLC,Oncology,Phase 1,adult,12,48,0.42,8.3,22.1,28,14,5,2018
+T002,NSCLC,Oncology,Phase 1,adult,8,36,0.45,9.1,25.0,24,12,3,2019
+T003,NSCLC,Oncology,Phase 1,adult,15,62,0.41,7.8,20.5,30,18,6,2017
+T004,NSCLC,Oncology,Phase 2,adult,45,186,0.78,12.4,28.3,36,22,10,2018
+T005,NSCLC,Oncology,Phase 2,adult,62,240,0.81,13.1,31.0,38,24,12,2019
+T006,NSCLC,Oncology,Phase 2,adult,38,152,0.75,11.8,27.6,34,20,8,2020
+T007,NSCLC,Oncology,Phase 2,adult,72,312,0.84,14.2,29.8,40,26,14,2018
+T008,NSCLC,Oncology,Phase 3,adult,142,680,0.98,10.2,24.5,54,32,22,2017
+T009,NSCLC,Oncology,Phase 3,adult,186,924,1.02,11.3,26.1,58,36,28,2018
+T010,NSCLC,Oncology,Phase 3,adult,168,798,0.95,10.8,23.9,52,30,24,2019
+T011,NSCLC,Oncology,Phase 3,adult,210,1080,1.05,12.1,27.4,60,38,30,2017
+T012,Breast Cancer,Oncology,Phase 1,adult,10,42,0.44,7.2,18.5,26,12,4,2018
+T013,Breast Cancer,Oncology,Phase 2,adult,48,198,0.82,9.8,22.4,36,20,10,2019
+T014,Breast Cancer,Oncology,Phase 2,adult,66,276,0.88,10.5,24.8,38,24,14,2018
+T015,Breast Cancer,Oncology,Phase 2,adult,42,168,0.79,9.2,21.6,34,18,8,2020
+T016,Breast Cancer,Oncology,Phase 3,adult,168,924,1.18,8.4,20.2,56,34,26,2017
+T017,Breast Cancer,Oncology,Phase 3,adult,224,1248,1.22,8.9,21.8,60,38,30,2018
+T018,Breast Cancer,Oncology,Phase 3,adult,196,1092,1.15,8.1,19.6,54,32,24,2019
+T019,Colorectal Cancer,Oncology,Phase 2,adult,52,208,0.72,13.6,30.2,38,22,10,2019
+T020,Colorectal Cancer,Oncology,Phase 3,adult,178,890,0.95,12.8,28.4,58,34,24,2018
+T021,Melanoma,Oncology,Phase 2,adult,44,176,0.81,11.2,26.5,36,20,10,2020
+T022,Melanoma,Oncology,Phase 3,adult,152,760,1.02,10.4,24.8,54,32,22,2019
+T023,Multiple Myeloma,Oncology,Phase 2,adult,56,224,0.68,15.4,32.6,42,24,12,2018
+T024,Multiple Myeloma,Oncology,Phase 3,adult,188,940,0.88,14.2,30.8,62,36,26,2017
+T025,Type 2 Diabetes,Metabolic,Phase 1,adult,8,40,0.58,4.2,15.3,18,10,3,2019
+T026,Type 2 Diabetes,Metabolic,Phase 2,adult,68,408,1.48,6.8,18.2,30,18,12,2018
+T027,Type 2 Diabetes,Metabolic,Phase 2,adult,82,492,1.52,7.1,19.5,32,20,14,2019
+T028,Type 2 Diabetes,Metabolic,Phase 2,adult,58,348,1.44,6.4,17.8,28,16,10,2020
+T029,Type 2 Diabetes,Metabolic,Phase 3,adult,188,1692,2.02,5.8,16.4,42,24,22,2017
+T030,Type 2 Diabetes,Metabolic,Phase 3,adult,242,2178,2.18,6.2,17.9,44,26,28,2018
+T031,Type 2 Diabetes,Metabolic,Phase 3,adult,216,1944,2.08,5.5,15.8,40,22,24,2019
+T032,Obesity,Metabolic,Phase 2,adult,72,432,1.38,8.4,22.6,30,20,12,2020
+T033,Obesity,Metabolic,Phase 3,adult,228,2052,1.98,9.2,24.8,48,28,22,2019
+T034,Heart Failure,Cardiovascular,Phase 2,adult,58,290,0.88,14.2,24.6,36,18,12,2018
+T035,Heart Failure,Cardiovascular,Phase 2,adult,74,370,0.92,15.1,26.2,38,20,14,2019
+T036,Heart Failure,Cardiovascular,Phase 3,adult,198,1188,1.22,12.8,22.4,54,30,26,2017
+T037,Heart Failure,Cardiovascular,Phase 3,adult,256,1536,1.28,13.6,23.8,58,34,30,2018
+T038,Atrial Fibrillation,Cardiovascular,Phase 2,adult,62,310,1.02,10.4,20.2,32,18,12,2019
+T039,Atrial Fibrillation,Cardiovascular,Phase 3,adult,212,1272,1.32,9.8,18.6,52,28,24,2018
+T040,Hypertension,Cardiovascular,Phase 2,adult,78,468,1.58,5.2,14.8,24,14,14,2020
+T041,Hypertension,Cardiovascular,Phase 3,adult,268,2412,2.28,4.8,13.2,36,18,28,2019
+T042,Rheumatoid Arthritis,Immunology,Phase 2,adult,64,320,1.12,8.6,22.4,30,16,12,2018
+T043,Rheumatoid Arthritis,Immunology,Phase 2,adult,82,410,1.18,9.2,24.6,32,18,14,2019
+T044,Rheumatoid Arthritis,Immunology,Phase 3,adult,188,1128,1.42,7.8,20.8,46,24,24,2017
+T045,Rheumatoid Arthritis,Immunology,Phase 3,adult,236,1416,1.48,8.4,22.2,48,26,28,2018
+T046,Psoriasis,Immunology,Phase 2,adult,56,280,1.22,6.4,18.6,28,14,10,2019
+T047,Psoriasis,Immunology,Phase 3,adult,184,1104,1.52,5.8,16.4,42,22,22,2018
+T048,IBD,Immunology,Phase 2,adult,68,340,1.02,12.4,28.6,34,18,14,2020
+T049,IBD,Immunology,Phase 3,adult,198,1188,1.28,11.8,26.8,50,26,24,2019
+T050,Alzheimer's Disease,CNS,Phase 2,adult,72,288,0.48,18.6,34.2,48,24,14,2018
+T051,Alzheimer's Disease,CNS,Phase 2,elderly,64,256,0.44,21.4,36.8,50,26,12,2019
+T052,Alzheimer's Disease,CNS,Phase 3,adult,198,792,0.52,16.8,32.4,72,36,24,2017
+T053,Alzheimer's Disease,CNS,Phase 3,elderly,224,896,0.48,19.2,35.6,78,40,28,2018
+T054,Depression,CNS,Phase 2,adult,62,310,1.28,14.2,26.4,28,14,12,2019
+T055,Depression,CNS,Phase 2,adult,78,390,1.32,15.1,28.2,30,16,14,2020
+T056,Depression,CNS,Phase 3,adult,192,1152,1.58,13.4,24.8,44,22,24,2018
+T057,Schizophrenia,CNS,Phase 2,adult,58,232,0.88,22.6,30.4,32,16,10,2019
+T058,Schizophrenia,CNS,Phase 3,adult,178,712,0.98,20.8,28.6,52,24,22,2018
+T059,COPD,Respiratory,Phase 2,adult,68,340,1.08,12.6,24.8,32,18,12,2019
+T060,COPD,Respiratory,Phase 3,adult,208,1248,1.32,11.4,22.6,50,26,24,2018
+T061,Asthma,Respiratory,Phase 2,adult,74,444,1.48,8.4,20.2,28,16,14,2020
+T062,Asthma,Respiratory,Phase 3,adult,228,1596,1.68,7.8,18.6,42,22,26,2019
+T063,Pediatric ALL,Oncology,Phase 2,pediatric,38,114,0.38,8.2,18.4,42,22,14,2018
+T064,Pediatric ALL,Oncology,Phase 3,pediatric,62,186,0.42,7.6,16.8,60,28,18,2017
+T065,Pediatric Asthma,Respiratory,Phase 2,pediatric,44,176,0.88,6.4,16.2,28,16,10,2019
+T066,Pediatric Asthma,Respiratory,Phase 3,pediatric,78,390,1.08,5.8,14.8,40,20,16,2018
+T067,Pediatric IBD,Immunology,Phase 2,pediatric,36,108,0.42,10.4,22.6,36,20,12,2020
+T068,Pediatric Type 1 Diabetes,Metabolic,Phase 3,pediatric,84,336,0.88,5.2,16.4,48,24,18,2019
+T069,Lupus,Immunology,Phase 2,adult,64,320,0.88,14.8,28.4,36,20,14,2019
+T070,Lupus,Immunology,Phase 3,adult,186,930,1.08,13.6,26.8,54,28,26,2018
+T071,Multiple Sclerosis,CNS,Phase 2,adult,68,272,0.82,10.4,22.6,36,20,14,2019
+T072,Multiple Sclerosis,CNS,Phase 3,adult,204,816,0.98,9.8,20.8,60,28,26,2018
+T073,Parkinson's Disease,CNS,Phase 2,elderly,52,208,0.52,14.6,28.2,42,24,12,2020
+T074,Parkinson's Disease,CNS,Phase 3,elderly,164,656,0.62,13.8,26.4,64,32,22,2019
+T075,Prostate Cancer,Oncology,Phase 2,adult,48,192,0.82,10.2,24.6,36,20,10,2020
+T076,Prostate Cancer,Oncology,Phase 3,adult,172,860,1.02,9.4,22.8,56,30,24,2019
+T077,Pancreatic Cancer,Oncology,Phase 2,adult,42,168,0.62,18.4,36.8,32,18,10,2019
+T078,Pancreatic Cancer,Oncology,Phase 3,adult,138,690,0.72,17.6,34.2,50,26,20,2018
+T079,Ovarian Cancer,Oncology,Phase 2,adult,46,184,0.78,11.4,26.4,36,20,10,2020
+T080,Ovarian Cancer,Oncology,Phase 3,adult,158,790,0.92,10.8,24.8,54,28,22,2019
+T081,ALS,CNS,Phase 2,adult,48,144,0.42,22.4,34.6,42,24,14,2019
+T082,ALS,CNS,Phase 3,adult,128,384,0.48,21.2,32.8,64,32,22,2018
+T083,Atopic Dermatitis,Immunology,Phase 2,adult,62,310,1.38,7.2,18.4,26,14,12,2020
+T084,Atopic Dermatitis,Immunology,Phase 3,adult,196,1176,1.62,6.8,16.8,40,20,24,2019
+T085,CKD,Renal,Phase 2,adult,68,340,1.08,10.4,22.6,34,18,12,2019
+T086,CKD,Renal,Phase 3,adult,212,1272,1.32,9.8,20.8,52,26,26,2018
+T087,Heart Failure,Cardiovascular,Phase 2,elderly,62,310,0.82,18.6,26.4,38,20,12,2020
+T088,Heart Failure,Cardiovascular,Phase 3,elderly,188,940,1.02,16.8,24.8,58,30,26,2019
+T089,Alzheimer's Disease,CNS,Phase 2,all-comers,68,272,0.46,19.8,35.4,50,26,14,2020
+T090,Type 2 Diabetes,Metabolic,Phase 2,elderly,72,360,1.28,7.8,18.6,32,18,14,2020
+T091,NSCLC,Oncology,Phase 2,elderly,44,176,0.72,14.8,30.4,38,22,10,2020
+T092,Breast Cancer,Oncology,Phase 2,elderly,42,168,0.74,11.2,23.8,36,20,10,2021
+T093,NSCLC,Oncology,Phase 1,adult,10,38,0.44,10.2,24.6,26,14,4,2020
+T094,Colorectal Cancer,Oncology,Phase 2,adult,48,192,0.68,14.2,31.4,36,20,10,2021
+T095,Rheumatoid Arthritis,Immunology,Phase 2,elderly,58,232,0.98,10.4,24.8,32,18,12,2021
+T096,Depression,CNS,Phase 2,elderly,54,216,1.08,16.4,28.6,30,16,10,2021
+T097,Obesity,Metabolic,Phase 2,adult,68,408,1.28,9.8,26.2,32,20,14,2021
+T098,Asthma,Respiratory,Phase 2,pediatric,46,184,0.98,7.2,18.4,28,16,12,2021
+T099,Multiple Myeloma,Oncology,Phase 3,adult,202,1010,0.92,15.4,32.2,64,38,28,2020
+T100,IBD,Immunology,Phase 2,adult,72,360,1.08,13.2,29.4,34,20,14,2021
