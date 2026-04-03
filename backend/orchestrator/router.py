@@ -1,6 +1,7 @@
 """
 Routes confirmed intents to the appropriate SubAgent instance.
 """
+from __future__ import annotations
 from backend.agents.base_agent import BaseAgent
 from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent

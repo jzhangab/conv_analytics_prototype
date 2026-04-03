@@ -11,6 +11,8 @@ Per-request flow:
      d. Execute confirmed skill (SKILL_EXECUTION)
   4. Build and return a ChatResponse dict for the Flask layer.
 """
+from __future__ import annotations
+
 import logging
 import uuid
 from datetime import datetime

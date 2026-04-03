@@ -1,6 +1,8 @@
 """
 LLM-based intent classifier. Returns a skill_id and confidence score.
 """
+from __future__ import annotations
+
 import logging
 
 from backend.llm.llm_client import LLMClient

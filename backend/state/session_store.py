@@ -1,5 +1,7 @@
 """
-In-memory session store. Each Flask request looks up or creates a ConversationState
+from __future__ import annotations
+
+# In-memory session store. Each Flask request looks up or creates a ConversationState
 by session_id. Sessions expire after a configurable timeout.
 """
 import threading
