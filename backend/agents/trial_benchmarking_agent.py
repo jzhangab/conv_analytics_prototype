@@ -122,8 +122,8 @@ class TrialBenchmarkingAgent(BaseAgent):
         self, indication: str, age_group: str, phase: str
     ) -> tuple[str, list[dict]]:
         """
-        Load citeline_data.csv, filter by indication (partial match), age_group,
-        and phase. Falls back progressively when no exact match exists.
+        Load citeline_data.csv, semantically map user inputs to canonical dataset
+        values via LLM, then filter. Falls back progressively when no exact match.
         Returns (data_context_string, matched_rows_as_list_of_dicts).
         """
         try:
@@ -143,38 +143,65 @@ class TrialBenchmarkingAgent(BaseAgent):
         except Exception as e:
             return f"Could not read Citeline data: {e}", []
 
-        # Normalise
+        # Normalise column names and values
         df.columns = [c.strip().lower() for c in df.columns]
         df["indication"] = df["indication"].str.strip()
-        df["age_group"] = df["age_group"].str.strip().str.lower()
-        df["phase"] = df["phase"].str.strip()
+        df["age_group"]  = df["age_group"].str.strip().str.lower()
+        df["phase"]      = df["phase"].str.strip()
 
-        ind_lower = indication.strip().lower()
-        ag_lower = age_group.strip().lower()
-        ph_lower = phase.strip().lower()
+        # Semantically map user inputs → canonical dataset values via LLM
+        canonical = self._semantic_map(
+            indication, age_group, phase,
+            indications=sorted(df["indication"].unique().tolist()),
+            phases=sorted(df["phase"].unique().tolist()),
+            age_groups=sorted(df["age_group"].unique().tolist()),
+        )
+        mapped_indications = canonical.get("indication_matches", [])
+        mapped_phase       = canonical.get("phase_match")
+        mapped_age_group   = canonical.get("age_group_match")
+
+        logger.info(
+            "Citeline semantic map: ind=%s → %s | phase=%s → %s | ag=%s → %s",
+            indication, mapped_indications, phase, mapped_phase, age_group, mapped_age_group,
+        )
 
         def _ind_mask(d):
-            return d["indication"].str.lower().str.contains(ind_lower, regex=False)
+            if mapped_indications:
+                return d["indication"].isin(mapped_indications)
+            # Fallback: substring match on original input
+            return d["indication"].str.lower().str.contains(indication.strip().lower(), regex=False)
 
-        # 1. Full match
-        matched = df[_ind_mask(df) & (df["age_group"] == ag_lower) & (df["phase"].str.lower() == ph_lower)]
+        def _phase_mask(d):
+            if mapped_phase:
+                return d["phase"] == mapped_phase
+            return d["phase"].str.lower() == phase.strip().lower()
+
+        def _ag_mask(d):
+            if mapped_age_group:
+                return d["age_group"] == mapped_age_group
+            return d["age_group"] == age_group.strip().lower()
+
         fallback_note = ""
+
+        # 1. Full match: indication + phase + age_group
+        matched = df[_ind_mask(df) & _phase_mask(df) & _ag_mask(df)]
 
         # 2. Relax age group
         if matched.empty:
-            matched = df[_ind_mask(df) & (df["phase"].str.lower() == ph_lower)]
+            matched = df[_ind_mask(df) & _phase_mask(df)]
             if not matched.empty:
-                fallback_note = f" (age group '{age_group}' not in database — showing all age groups for this phase)"
+                fallback_note = f" (age group '{age_group}' not found — showing all age groups for this phase)"
 
         # 3. Relax phase too
         if matched.empty:
             matched = df[_ind_mask(df)]
             if not matched.empty:
-                fallback_note = f" (phase '{phase}' not in database — showing all phases for this indication)"
+                fallback_note = f" (phase '{phase}' not found — showing all phases for this indication)"
 
         if matched.empty:
             return (
-                f"No trials found in Citeline database matching indication '{indication}'. "
+                f"No trials found in Citeline database for indication '{indication}' "
+                f"(mapped to: {mapped_indications or 'no match'}). "
                 "Metrics will be based on general industry knowledge.",
                 [],
             )
@@ -198,6 +225,60 @@ class TrialBenchmarkingAgent(BaseAgent):
             f"  Phases in match:             {', '.join(s['phases'])}\n"
         )
         return context, matched_rows
+
+    def _semantic_map(
+        self,
+        indication: str,
+        age_group: str,
+        phase: str,
+        indications: list[str],
+        phases: list[str],
+        age_groups: list[str],
+    ) -> dict:
+        """
+        Call the LLM to map free-text user inputs to canonical values that exist
+        in the Citeline dataset. Returns a dict with keys:
+          indication_matches: list of matching indication strings (may be >1)
+          phase_match:        single matching phase string or null
+          age_group_match:    single matching age_group string or null
+        """
+        prompt = (
+            "Map the user's clinical trial query parameters to the closest matching "
+            "values from the provided database lists. Match semantically — e.g. "
+            "'lung cancer' → ['NSCLC'], 'diabetes' → ['Type 2 Diabetes'], "
+            "'Phase II' → 'Phase 2', 'adults' → 'adult', 'elderly patients' → 'elderly'.\n\n"
+            f"User query:\n"
+            f"  Indication: {indication}\n"
+            f"  Phase: {phase}\n"
+            f"  Age Group: {age_group}\n\n"
+            f"Available indications: {', '.join(indications)}\n"
+            f"Available phases: {', '.join(phases)}\n"
+            f"Available age groups: {', '.join(age_groups)}\n\n"
+            "Return ONLY a JSON object:\n"
+            "{\n"
+            '  "indication_matches": ["<exact string from available indications>", ...],\n'
+            '  "phase_match": "<exact string from available phases or null>",\n'
+            '  "age_group_match": "<exact string from available age groups or null>"\n'
+            "}\n"
+            "Use null if no reasonable match exists. Only return strings that appear "
+            "verbatim in the available lists."
+        )
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            result = self.llm.complete_json(messages)
+            # Validate that returned values exist in the dataset
+            valid_inds = set(indications)
+            result["indication_matches"] = [
+                i for i in result.get("indication_matches", []) if i in valid_inds
+            ]
+            if result.get("phase_match") not in phases:
+                result["phase_match"] = None
+            if result.get("age_group_match") not in age_groups:
+                result["age_group_match"] = None
+            return result
+        except Exception as e:
+            logger.warning("Semantic mapping LLM call failed: %s", e)
+            return {"indication_matches": [], "phase_match": None, "age_group_match": None}
 
     def _compute_stats(self, df) -> dict:
         return {
