@@ -58,63 +58,60 @@ class TrialBenchmarkingAgent(BaseAgent):
                 error_message=f"Error during trial benchmarking: {e}"
             )
 
+        metrics = data.get("key_metrics", {})
+        patterns = data.get("notable_patterns", [])
+        challenges = data.get("key_challenges", [])
+
+        # Build narrative with summary metrics embedded as markdown
+        metrics_md = (
+            f"| Metric | Value |\n|---|---|\n"
+            f"| Median enrollment rate | {metrics.get('median_enrollment_rate_patients_per_site_per_month', '—')} pts/site/mo |\n"
+            f"| Median dropout rate | {metrics.get('median_dropout_rate_percent', '—')}% |\n"
+            f"| Typical total duration | {metrics.get('typical_duration_months', '—')} months |\n"
+            f"| Typical site count | {metrics.get('typical_site_count_range', '—')} |\n"
+            f"| Typical screen failure rate | {metrics.get('typical_screen_failure_rate_percent', '—')}% |\n"
+        )
+        patterns_md = "\n".join(f"- {p}" for p in patterns) if patterns else ""
+        challenges_md = "\n".join(f"- {c}" for c in challenges) if challenges else ""
+
         response_text = (
             f"**Trial Benchmarking: {indication} — {phase} — {age_group.capitalize()}**\n\n"
-            + data.get("benchmark_summary", "")
-            + "\n\n"
+            + data.get("benchmark_summary", "") + "\n\n"
+            + "**Key Metrics**\n\n" + metrics_md + "\n"
+            + (f"**Notable Patterns**\n\n{patterns_md}\n\n" if patterns_md else "")
+            + (f"**Key Challenges**\n\n{challenges_md}\n\n" if challenges_md else "")
+            + f"*{data.get('data_source', '')}*\n\n"
             + f"*{data.get('caveats', '')}*"
         )
 
-        # Key metrics table
-        metrics = data.get("key_metrics", {})
-        metrics_rows = [
-            {"Metric / Category": "Median Enrollment Rate (pts/site/mo)",
-             "Value / Detail": str(metrics.get("median_enrollment_rate_patients_per_site_per_month", "—"))},
-            {"Metric / Category": "Median Dropout Rate (%)",
-             "Value / Detail": str(metrics.get("median_dropout_rate_percent", "—"))},
-            {"Metric / Category": "Typical Total Duration (months)",
-             "Value / Detail": str(metrics.get("typical_duration_months", "—"))},
-            {"Metric / Category": "Typical Site Count Range",
-             "Value / Detail": str(metrics.get("typical_site_count_range", "—"))},
-            {"Metric / Category": "Typical Screen Failure Rate (%)",
-             "Value / Detail": str(metrics.get("typical_screen_failure_rate_percent", "—"))},
-            {"Metric / Category": "Data Source",
-             "Value / Detail": data.get("data_source", "—")},
+        # Matched trial rows as a proper columnar table
+        trial_table_columns = [
+            "Trial ID", "Indication", "Phase", "Age Group", "Year",
+            "Sites", "Patients", "Enroll Rate\n(pts/site/mo)",
+            "Dropout %", "Screen Fail %", "Total Duration\n(mo)", "Enroll Duration\n(mo)",
         ]
-
-        patterns = data.get("notable_patterns", [])
-        challenges = data.get("key_challenges", [])
-        bullets_rows = (
-            [{"Metric / Category": "Notable Pattern", "Value / Detail": p} for p in patterns]
-            + [{"Metric / Category": "Key Challenge", "Value / Detail": c} for c in challenges]
-        )
-
-        # Matched trial detail rows (up to 15)
-        detail_rows = []
-        if matched_rows:
-            detail_rows = [{"Metric / Category": "── Matched Citeline Trials ──", "Value / Detail": ""}]
-            for row in matched_rows[:15]:
-                detail_rows.append({
-                    "Metric / Category": (
-                        f"{row.get('indication', '')} | "
-                        f"{row.get('phase', '')} | "
-                        f"{row.get('age_group', '')} | "
-                        f"{row.get('year_started', '')}"
-                    ),
-                    "Value / Detail": (
-                        f"Sites: {row.get('num_sites', '')}, "
-                        f"Pts: {row.get('num_patients_enrolled', '')}, "
-                        f"Rate: {row.get('enrollment_rate_pts_per_site_per_month', '')} pts/site/mo, "
-                        f"Dropout: {row.get('dropout_rate_pct', '')}%, "
-                        f"Duration: {row.get('total_duration_months', '')} mo"
-                    ),
-                })
+        trial_table_data = []
+        for row in matched_rows:
+            trial_table_data.append({
+                "Trial ID":                   row.get("trial_id", ""),
+                "Indication":                 row.get("indication", ""),
+                "Phase":                      row.get("phase", ""),
+                "Age Group":                  row.get("age_group", ""),
+                "Year":                       row.get("year_started", ""),
+                "Sites":                      row.get("num_sites", ""),
+                "Patients":                   row.get("num_patients_enrolled", ""),
+                "Enroll Rate\n(pts/site/mo)": row.get("enrollment_rate_pts_per_site_per_month", ""),
+                "Dropout %":                  row.get("dropout_rate_pct", ""),
+                "Screen Fail %":              row.get("screen_failure_rate_pct", ""),
+                "Total Duration\n(mo)":       row.get("total_duration_months", ""),
+                "Enroll Duration\n(mo)":      row.get("enrollment_duration_months", ""),
+            })
 
         return AgentResult(
             success=True,
             text_response=response_text,
-            table_data=metrics_rows + bullets_rows + detail_rows,
-            table_columns=["Metric / Category", "Value / Detail"],
+            table_data=trial_table_data if trial_table_data else None,
+            table_columns=trial_table_columns if trial_table_data else None,
         )
 
     # ------------------------------------------------------------------
