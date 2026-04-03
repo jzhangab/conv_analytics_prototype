@@ -149,26 +149,64 @@ class TrialBenchmarkingAgent(BaseAgent):
         df["age_group"]  = df["age_group"].str.strip().str.lower()
         df["phase"]      = df["phase"].str.strip()
 
+        dataset_indications = sorted(df["indication"].unique().tolist())
+        dataset_phases      = sorted(df["phase"].unique().tolist())
+        dataset_age_groups  = sorted(df["age_group"].unique().tolist())
+
         # Semantically map user inputs → canonical dataset values via LLM
         canonical = self._semantic_map(
             indication, age_group, phase,
-            indications=sorted(df["indication"].unique().tolist()),
-            phases=sorted(df["phase"].unique().tolist()),
-            age_groups=sorted(df["age_group"].unique().tolist()),
+            indications=dataset_indications,
+            phases=dataset_phases,
+            age_groups=dataset_age_groups,
         )
         mapped_indications = canonical.get("indication_matches", [])
         mapped_phase       = canonical.get("phase_match")
         mapped_age_group   = canonical.get("age_group_match")
 
-        logger.info(
-            "Citeline semantic map: ind=%s → %s | phase=%s → %s | ag=%s → %s",
-            indication, mapped_indications, phase, mapped_phase, age_group, mapped_age_group,
+        # Log mapping result to call_log so the notebook trace pane shows it
+        self._log_trace(
+            label="Citeline Semantic Mapping",
+            summary=(
+                f"User inputs:\n"
+                f"  Indication: {indication!r}\n"
+                f"  Phase:      {phase!r}\n"
+                f"  Age Group:  {age_group!r}\n\n"
+                f"Dataset values available:\n"
+                f"  Indications: {', '.join(dataset_indications)}\n"
+                f"  Phases:      {', '.join(dataset_phases)}\n"
+                f"  Age Groups:  {', '.join(dataset_age_groups)}\n\n"
+                f"LLM mapping result:\n"
+                f"  indication_matches: {mapped_indications}\n"
+                f"  phase_match:        {mapped_phase!r}\n"
+                f"  age_group_match:    {mapped_age_group!r}"
+            ),
         )
+
+        # Case-insensitive normalised lookup maps (handles apostrophe variants, spacing)
+        def _norm(s):
+            return s.lower().replace("\u2019", "'").replace("\u2018", "'").strip()
+
+        ind_norm_map = {_norm(v): v for v in dataset_indications}
+        phase_norm_map = {_norm(v): v for v in dataset_phases}
+        ag_norm_map = {_norm(v): v for v in dataset_age_groups}
+
+        # Re-validate mapped values using normalised comparison
+        mapped_indications = [
+            ind_norm_map[_norm(i)] for i in mapped_indications if _norm(i) in ind_norm_map
+        ]
+        if mapped_phase and _norm(mapped_phase) in phase_norm_map:
+            mapped_phase = phase_norm_map[_norm(mapped_phase)]
+        else:
+            mapped_phase = None
+        if mapped_age_group and _norm(mapped_age_group) in ag_norm_map:
+            mapped_age_group = ag_norm_map[_norm(mapped_age_group)]
+        else:
+            mapped_age_group = None
 
         def _ind_mask(d):
             if mapped_indications:
                 return d["indication"].isin(mapped_indications)
-            # Fallback: substring match on original input
             return d["indication"].str.lower().str.contains(indication.strip().lower(), regex=False)
 
         def _phase_mask(d):
@@ -198,6 +236,19 @@ class TrialBenchmarkingAgent(BaseAgent):
             if not matched.empty:
                 fallback_note = f" (phase '{phase}' not found — showing all phases for this indication)"
 
+        # Log match result
+        self._log_trace(
+            label="Citeline Filter Result",
+            summary=(
+                f"After normalised validation:\n"
+                f"  indication_matches: {mapped_indications}\n"
+                f"  phase_match:        {mapped_phase!r}\n"
+                f"  age_group_match:    {mapped_age_group!r}\n\n"
+                f"Rows matched: {len(matched)}"
+                + (f"\nFallback applied: {fallback_note}" if fallback_note else "")
+            ),
+        )
+
         if matched.empty:
             return (
                 f"No trials found in Citeline database for indication '{indication}' "
@@ -225,6 +276,16 @@ class TrialBenchmarkingAgent(BaseAgent):
             f"  Phases in match:             {', '.join(s['phases'])}\n"
         )
         return context, matched_rows
+
+    def _log_trace(self, label: str, summary: str) -> None:
+        """Append a synthetic entry to the LLM client's call_log for the trace pane."""
+        if not hasattr(self.llm, "call_log"):
+            self.llm.call_log = []
+        self.llm.call_log.append({
+            "messages": [{"role": "system", "content": f"[{label}]"}, {"role": "user", "content": summary}],
+            "response": summary,
+            "synthetic": True,
+        })
 
     def _semantic_map(
         self,
