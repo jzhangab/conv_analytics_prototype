@@ -29,11 +29,10 @@ class LLMClient:
     def complete(self, messages: list[dict], temperature: float = None) -> str:
         """
         Send a list of {role, content} messages to the LLM Mesh and return the
-        text response. temperature defaults to self.temp_agents if not specified.
+        text response. Temperature is managed by the Dataiku LLM Mesh connection
+        configuration; Azure OpenAI via LLM Mesh does not support per-call
+        temperature overrides through the Python SDK.
         """
-        if temperature is None:
-            temperature = self.temp_agents
-
         try:
             api_client = self._get_dataiku_client()
             project_key = __import__("dataiku").default_project_key()
@@ -44,10 +43,7 @@ class LLMClient:
             for msg in messages:
                 completion.with_message(msg["role"], msg["content"])
 
-            resp = completion.execute(
-                temperature=temperature,
-                max_tokens=self.max_tokens
-            )
+            resp = completion.execute()
             return resp.text
 
         except Exception as e:
