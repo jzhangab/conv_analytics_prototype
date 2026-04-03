@@ -20,6 +20,15 @@ from flask import Flask, jsonify, render_template, request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _serialize_response(response: dict) -> dict:
+    """Convert any non-JSON-serializable objects in the response (e.g. Bokeh Figure) before jsonify."""
+    chart = response.get("chart_json")
+    if chart is not None and not isinstance(chart, dict):
+        from bokeh.embed import json_item
+        response = {**response, "chart_json": json_item(chart, "enrollment_chart")}
+    return response
+
 app = Flask(
     __name__,
     template_folder="frontend/templates",
@@ -86,7 +95,7 @@ def chat():
         return jsonify({"error": "Empty message"}), 400
 
     response = orch.process_message(session_id, user_message)
-    return jsonify({"session_id": session_id, **response})
+    return jsonify({"session_id": session_id, **_serialize_response(response)})
 
 
 @app.route("/upload", methods=["POST"])
@@ -123,7 +132,7 @@ def confirm():
         return jsonify({"error": "Missing session_id"}), 400
 
     response = orch.handle_confirmation(session_id, confirmed, edit_params)
-    return jsonify({"session_id": session_id, **response})
+    return jsonify({"session_id": session_id, **_serialize_response(response)})
 
 
 @app.route("/export", methods=["POST"])

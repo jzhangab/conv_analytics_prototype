@@ -78,17 +78,18 @@ def compute_scenario(
     }
 
 
-def build_enrollment_chart(
-    scenarios: dict,           # {"pessimistic": params, "moderate": params, "optimistic": params}
+def build_enrollment_figure(
+    scenarios: dict,
     num_sites: int,
     num_patients: int,
     start_date: datetime,
     indication: str,
     phase: str,
-) -> dict:
+):
     """
-    Build a Bokeh chart with three enrollment curves and three site activation curves.
-    Returns a dict serializable to JSON (via Bokeh json_item).
+    Build a Bokeh Figure with three enrollment curves and three site activation curves.
+    Returns the raw Bokeh Figure — use directly in pn.pane.Bokeh() for the notebook,
+    or wrap with json_item() for the Flask webapp (see build_enrollment_chart).
     """
     colors = {
         "pessimistic": "#e74c3c",
@@ -186,4 +187,20 @@ def build_enrollment_chart(
     p.xgrid.grid_line_alpha = 0.3
     p.ygrid.grid_line_alpha = 0.3
 
+    return p
+
+
+def build_enrollment_chart(
+    scenarios: dict,
+    num_sites: int,
+    num_patients: int,
+    start_date: datetime,
+    indication: str,
+    phase: str,
+) -> dict:
+    """
+    Convenience wrapper for the Flask webapp: builds the Figure and converts
+    it to a Bokeh json_item dict suitable for embedding via BokehJS.
+    """
+    p = build_enrollment_figure(scenarios, num_sites, num_patients, start_date, indication, phase)
     return json_item(p, "enrollment_chart")

@@ -16,7 +16,7 @@ from backend.llm.prompt_templates import (ENROLLMENT_NARRATIVE_SYSTEM,
                                            ENROLLMENT_PARAMS_USER)
 from backend.llm.response_parser import parse_enrollment_params
 from backend.state.conversation_state import ConversationState
-from backend.utils.chart_builder import build_enrollment_chart, compute_scenario
+from backend.utils.chart_builder import build_enrollment_figure, compute_scenario
 from backend.utils.formatters import dict_list_to_table
 from backend.utils.validators import normalize_date
 
@@ -86,7 +86,7 @@ class EnrollmentForecastingAgent(BaseAgent):
 
         # Build Bokeh chart
         try:
-            chart_json = build_enrollment_chart(
+            chart_json = build_enrollment_figure(
                 scenarios=scenario_params,
                 num_sites=num_sites,
                 num_patients=num_patients,
