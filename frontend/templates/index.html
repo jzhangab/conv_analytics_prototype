@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clinical Analytics Assistant</title>
+  <link rel="stylesheet" href="/static/css/chat.css" />
+  <!-- Bokeh CDN for chart rendering -->
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-3.3.0.min.js"></script>
+  <script src="https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.3.0.min.js"></script>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <h2>Clinical Analytics</h2>
+      <p class="subtitle">Drug R&amp;D Assistant</p>
+    </div>
+
+    <div id="skill-list">
+      <h3>Available Skills</h3>
+      <ul>
+        <li><span class="skill-icon">&#9993;</span> Site List Merger</li>
+        <li><span class="skill-icon">&#128202;</span> Trial Benchmarking</li>
+        <li><span class="skill-icon">&#127758;</span> Drug Reimbursement</li>
+        <li><span class="skill-icon">&#128200;</span> Enrollment Forecasting</li>
+      </ul>
+    </div>
+
+    <!-- File upload panel (shown when site merger is active) -->
+    <div id="upload-panel" class="hidden">
+      <h3>Site List Files</h3>
+      <div class="upload-slot">
+        <label>CRO Site List</label>
+        <div id="cro-drop-zone" class="drop-zone" data-file-key="cro_file">
+          <span>Drop CSV/Excel here or click to browse</span>
+          <input type="file" id="cro-file-input" accept=".csv,.xlsx,.xls" />
+        </div>
+        <div id="cro-file-status" class="file-status"></div>
+      </div>
+      <div class="upload-slot">
+        <label>Sponsor Site List</label>
+        <div id="sponsor-drop-zone" class="drop-zone" data-file-key="sponsor_file">
+          <span>Drop CSV/Excel here or click to browse</span>
+          <input type="file" id="sponsor-file-input" accept=".csv,.xlsx,.xls" />
+        </div>
+        <div id="sponsor-file-status" class="file-status"></div>
+      </div>
+    </div>
+
+    <div id="sidebar-footer">
+      <button id="new-session-btn" title="Start a new conversation">&#8635; New Session</button>
+    </div>
+  </aside>
+
+  <!-- Main chat area -->
+  <main id="chat-area">
+    <div id="messages" role="log" aria-live="polite"></div>
+
+    <!-- Typing indicator -->
+    <div id="typing-indicator" class="hidden">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>
+
+    <!-- Confirmation bar (shown when fsm_state = confirmation_pending) -->
+    <div id="confirm-bar" class="hidden">
+      <button id="confirm-yes-btn" class="btn-confirm">&#10003; Yes, proceed</button>
+      <button id="confirm-no-btn" class="btn-cancel">&#10007; Cancel</button>
+    </div>
+
+    <!-- Input area -->
+    <div id="input-area">
+      <textarea
+        id="message-input"
+        placeholder="Describe what you need, or type a question..."
+        rows="2"
+        aria-label="Chat message input"
+      ></textarea>
+      <button id="send-btn" title="Send message">Send</button>
+    </div>
+  </main>
+
+</div>
+
+<!-- Export modal -->
+<div id="export-modal" class="modal hidden">
+  <div class="modal-content">
+    <h3>Export to Dataiku Dataset</h3>
+    <label for="export-dataset-name">Dataset name:</label>
+    <input type="text" id="export-dataset-name" placeholder="e.g., merged_sites_output" />
+    <div class="modal-actions">
+      <button id="export-confirm-btn" class="btn-confirm">Export</button>
+      <button id="export-cancel-btn" class="btn-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/chart_viewer.js"></script>
+<script src="/static/js/confirm_dialog.js"></script>
+<script src="/static/js/chat.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+llm_mesh:
+  connection_id: "YOUR_LLM_CONNECTION_ID"   # Replace with your Dataiku LLM Mesh connection ID
+  temperature_classify: 0.1                  # Low temp for deterministic intent classification
+  temperature_extract: 0.1                   # Low temp for parameter extraction
+  temperature_agents: 0.3                    # Moderate temp for agent responses
+  temperature_deterministic: 0.0             # Zero temp for data tasks (site merger)
+  max_tokens: 4096
+  context_window_turns: 10                   # Number of prior turns sent to LLM
+
+session:
+  timeout_minutes: 30
+
+upload:
+  allowed_extensions:
+    - csv
+    - xlsx
+    - xls
+  max_size_mb: 10

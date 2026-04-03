@@ -1,0 +1,137 @@
+skills:
+  site_list_merger:
+    display_name: "Clinical Site List Merger"
+    description: >
+      Merges two lists of clinical sites — one from the CRO and one from the sponsor —
+      into a unified, deduplicated, reconciled list. Accepts CSV or Excel file uploads.
+    required_parameters:
+      - name: cro_file
+        label: "CRO Site List File"
+        description: "CSV or Excel file containing the CRO's list of clinical sites"
+        data_type: file
+      - name: sponsor_file
+        label: "Sponsor Site List File"
+        description: "CSV or Excel file containing the sponsor's list of clinical sites"
+        data_type: file
+    optional_parameters:
+      - name: merge_strategy
+        label: "Conflict Resolution Strategy"
+        description: "How to handle conflicting values between the two lists"
+        data_type: choice
+        choices:
+          - prefer_cro
+          - prefer_sponsor
+          - flag_conflicts
+        default: flag_conflicts
+
+  trial_benchmarking:
+    display_name: "Clinical Trial Benchmarking"
+    description: >
+      Benchmarks clinical trials based on indication, age group, and phase.
+      Provides metrics on enrollment rates, dropout rates, typical site counts, and duration.
+    required_parameters:
+      - name: indication
+        label: "Indication"
+        description: "Therapeutic area or specific disease (e.g., NSCLC, Type 2 Diabetes)"
+        data_type: string
+      - name: age_group
+        label: "Age Group"
+        description: "Target patient population age bracket"
+        data_type: choice
+        choices:
+          - pediatric
+          - adult
+          - elderly
+          - all-comers
+        aliases:
+          pediatric: ["children", "child", "kids", "paediatric", "<18", "under 18"]
+          adult: ["adults", "adult patients", "18+", "18-65"]
+          elderly: ["elderly", "geriatric", "seniors", ">65", "over 65"]
+          all-comers: ["all ages", "all comers", "any age", "mixed"]
+      - name: phase
+        label: "Trial Phase"
+        description: "Clinical trial phase"
+        data_type: choice
+        choices:
+          - "Phase 1"
+          - "Phase 2"
+          - "Phase 3"
+          - "Phase 1/2"
+          - "Phase 2/3"
+
+  drug_reimbursement:
+    display_name: "Drug Reimbursement Assessment"
+    description: >
+      Assesses drug reimbursement likelihood and requirements by country,
+      given indication, age group, and development phase.
+    required_parameters:
+      - name: indication
+        label: "Indication"
+        description: "Therapeutic area or specific disease"
+        data_type: string
+      - name: age_group
+        label: "Age Group"
+        description: "Target patient population age bracket"
+        data_type: choice
+        choices:
+          - pediatric
+          - adult
+          - elderly
+          - all-comers
+      - name: phase
+        label: "Trial Phase"
+        description: "Clinical trial phase"
+        data_type: choice
+        choices:
+          - "Phase 1"
+          - "Phase 2"
+          - "Phase 3"
+          - "Phase 1/2"
+          - "Phase 2/3"
+      - name: countries
+        label: "Countries"
+        description: "Countries to assess for reimbursement (e.g., US, Germany, Japan)"
+        data_type: list
+
+  enrollment_forecasting:
+    display_name: "Enrollment & Site Activation Forecasting"
+    description: >
+      Forecasts clinical trial enrollment and site activation rates over time,
+      producing pessimistic, moderate, and optimistic scenario curves.
+    required_parameters:
+      - name: indication
+        label: "Indication"
+        description: "Therapeutic area or specific disease"
+        data_type: string
+      - name: age_group
+        label: "Age Group"
+        description: "Target patient population age bracket"
+        data_type: choice
+        choices:
+          - pediatric
+          - adult
+          - elderly
+          - all-comers
+      - name: phase
+        label: "Trial Phase"
+        description: "Clinical trial phase"
+        data_type: choice
+        choices:
+          - "Phase 1"
+          - "Phase 2"
+          - "Phase 3"
+          - "Phase 1/2"
+          - "Phase 2/3"
+      - name: num_sites
+        label: "Number of Sites"
+        description: "Planned number of clinical sites"
+        data_type: integer
+      - name: num_patients
+        label: "Number of Patients"
+        description: "Target number of patients to recruit"
+        data_type: integer
+    optional_parameters:
+      - name: enrollment_start_date
+        label: "Planned Enrollment Start Date"
+        description: "Date of first patient in (YYYY-MM-DD). Defaults to today."
+        data_type: date
