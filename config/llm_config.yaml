@@ -4,7 +4,7 @@ llm_mesh:
   temperature_extract: 0.1                   # Low temp for parameter extraction
   temperature_agents: 0.3                    # Moderate temp for agent responses
   temperature_deterministic: 0.0             # Zero temp for data tasks (site merger)
-  max_tokens: 4096
+  max_tokens: 16384
   context_window_turns: 10                   # Number of prior turns sent to LLM
 
 session:

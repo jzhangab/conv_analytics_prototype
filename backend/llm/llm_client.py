@@ -42,6 +42,10 @@ class LLMClient:
             completion = llm.new_completion()
             for msg in messages:
                 completion.with_message(msg["content"], msg["role"])
+            try:
+                completion.with_max_output_tokens(self.max_tokens)
+            except Exception:
+                pass  # older Dataiku SDK versions may not support this
 
             resp = completion.execute()
             return resp.text
