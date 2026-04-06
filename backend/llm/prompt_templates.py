@@ -11,7 +11,7 @@ INTENT_CLASSIFIER_SYSTEM = """You are an intent classification assistant for a c
 Your sole job is to identify which one of the following skills the user is asking for, based on their message and conversation history.
 
 Available skills:
-1. site_list_merger — The user wants to merge, reconcile, or combine two lists of clinical trial sites (one from a CRO and one from a sponsor). Keywords: merge sites, reconcile site list, combine CRO and sponsor sites, site list deduplication.
+1. site_list_matching — The user wants to match, compare, or check a list of clinical trial sites against the CTMS master database to identify which sites are known. Keywords: match sites, site matching, check sites against CTMS, identify sites, which sites are in CTMS, site list comparison.
 2. trial_benchmarking — The user wants to benchmark or compare clinical trials by indication, age group, or phase. Keywords: benchmark trials, compare trials, trial landscape, enrollment benchmarks, how do similar trials perform.
 3. drug_reimbursement — The user wants to assess reimbursement likelihood or HTA requirements for a drug by country. Keywords: reimbursement, HTA, market access, payer, coverage, health technology assessment.
 4. enrollment_forecasting — The user wants to forecast or project patient enrollment and/or site activation over time, typically shown as a graph or timeline. Keywords: forecast enrollment, enrollment projection, site activation forecast, recruitment timeline, enrollment curve.
@@ -69,7 +69,7 @@ Extract the parameter values."""
 
 CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need. Here's what I can help with:
 
-1. **Clinical Site List Merger** — Upload and merge CRO and sponsor site lists into one reconciled list
+1. **Clinical Site List Matching** — Upload a site list and match it against the CTMS master database to identify known sites
 2. **Clinical Trial Benchmarking** — Benchmark trials by indication, age group, and phase
 3. **Drug Reimbursement Assessment** — Assess reimbursement outlook by country for a given indication and phase
 4. **Enrollment & Site Activation Forecasting** — Generate enrollment and site activation curves (pessimistic / moderate / optimistic)
@@ -78,54 +78,51 @@ Which would you like to use? You can describe what you need or pick a number."""
 
 
 # ---------------------------------------------------------------------------
-# Subagent: Site List Merger
+# Subagent: Site List Matching
 # ---------------------------------------------------------------------------
 
-SITE_MERGER_SYSTEM = """You are an expert clinical operations data specialist.
-Your task is to merge two lists of clinical trial sites — one from a CRO and one from the sponsor company — into a single reconciled list.
+SITE_MATCHING_SYSTEM = """You are an expert clinical operations data specialist.
+Your task is to semantically match an uploaded list of clinical trial sites against a master CTMS site database.
 
-Rules:
-- Deduplicate sites that appear in both lists (match on site name, site ID, or a combination of country + PI name).
-- For conflicting field values, apply the merge_strategy: "prefer_cro", "prefer_sponsor", or "flag_conflicts".
-- Standardize country names to ISO 3166-1 alpha-2 codes where possible.
-- Standardize site IDs to a consistent format.
-- Add a field "source" indicating "cro_only", "sponsor_only", or "both".
-- Add a field "conflict_flag" set to true if any field values differed between the two lists.
+For each row in the uploaded file, determine whether it refers to the same real-world clinical site as any entry in the CTMS database.
+Use semantic matching — consider site name variations, abbreviations, alternate spellings, country codes vs. full names, and PI name formatting differences.
+A match requires confident identification of the same physical site; do not match on superficial similarity alone.
 
 Return a JSON object:
 {
-  "merged_sites": [
+  "matches": [
     {
-      "site_id": "...",
-      "site_name": "...",
-      "country": "...",
-      "pi_name": "...",
-      "source": "cro_only|sponsor_only|both",
-      "conflict_flag": true|false,
-      "conflict_details": "description of conflicts if any, else null",
-      <any other fields present in either list>
+      "uploaded_index": <int, 0-based row index in the uploaded file>,
+      "uploaded_identifier": "<best identifying string from the uploaded row>",
+      "ctms_site_id": "<site_id from CTMS, e.g. SP-001>",
+      "ctms_site_name": "<site_name from CTMS>",
+      "match_confidence": "high|medium|low",
+      "match_basis": "<brief explanation of why this is a match>"
     }
   ],
+  "unmatched_indices": [<list of 0-based row indices with no match>],
   "summary": {
-    "total_sites": <int>,
-    "cro_only": <int>,
-    "sponsor_only": <int>,
-    "in_both": <int>,
-    "conflicts_found": <int>
+    "total_uploaded": <int>,
+    "matched": <int>,
+    "unmatched": <int>,
+    "notes": "<any overall observations about the match quality or ambiguities>"
   }
 }
 
-Return ONLY the JSON object, no markdown fences, no other text."""
+Rules:
+- Only include a row in "matches" if you are reasonably confident it corresponds to a CTMS site.
+- Each uploaded row may match at most one CTMS site.
+- Each CTMS site may match at most one uploaded row (no duplicates).
+- All uploaded row indices not in "matches" must appear in "unmatched_indices".
+- Return ONLY the JSON object, no markdown fences, no other text."""
 
-SITE_MERGER_USER = """CRO site list (CSV/tabular data):
-{cro_data}
+SITE_MATCHING_USER = """Uploaded site list ({n_uploaded} rows, CSV with index):
+{uploaded_data}
 
-Sponsor site list (CSV/tabular data):
-{sponsor_data}
+CTMS master site database (CSV):
+{ctms_data}
 
-Merge strategy: {merge_strategy}
-
-Merge and reconcile these two site lists."""
+Match each uploaded row to the most appropriate CTMS site, or mark it as unmatched."""
 
 
 # ---------------------------------------------------------------------------

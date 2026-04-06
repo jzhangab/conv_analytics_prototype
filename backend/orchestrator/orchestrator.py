@@ -68,16 +68,15 @@ class Orchestrator:
         try:
             file_info = parse_uploaded_file(file_storage)
             state.uploaded_files[file_key] = file_info
-            label = "CRO" if file_key == "cro_file" else "Sponsor"
             msg = (
-                f"{label} site list uploaded: **{file_info['filename']}** "
+                f"Site list uploaded: **{file_info['filename']}** "
                 f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
             )
             state.add_message("assistant", msg)
 
-            # Auto-detect Site Merger intent if not already set
-            if state.active_skill is None or state.active_skill == "site_list_merger":
-                state.active_skill = "site_list_merger"
+            # Auto-detect Site Matching intent if not already set
+            if state.active_skill is None or state.active_skill == "site_list_matching":
+                state.active_skill = "site_list_matching"
                 state.fsm_state = FSMState.PARAMETER_GATHERING
 
             return self._build_response(message=msg, state=state)
@@ -298,7 +297,7 @@ class Orchestrator:
     def _parse_skill_selection(self, message: str) -> str | None:
         """Handle numbered skill selection from clarification menu."""
         skill_by_number = {
-            "1": "site_list_merger",
+            "1": "site_list_matching",
             "2": "trial_benchmarking",
             "3": "drug_reimbursement",
             "4": "enrollment_forecasting",

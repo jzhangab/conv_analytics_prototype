@@ -1,24 +1,15 @@
 skills:
-  site_list_merger:
-    display_name: "Clinical Site List Merger"
+  site_list_matching:
+    display_name: "Clinical Site List Matching"
     description: >
-      Merges two lists of clinical sites — one from the CRO and one from the sponsor —
-      into a unified, deduplicated, reconciled list. Accepts CSV or Excel file uploads.
+      Matches an uploaded site list against the CTMS master site database using semantic
+      matching. Identifies which uploaded sites correspond to known CTMS sites, and flags
+      unrecognized sites. Accepts CSV or Excel file uploads.
     required_parameters:
-      - name: cro_file
-        label: "CRO Site List File"
-        description: "CSV or Excel file containing the CRO's list of clinical sites"
+      - name: site_file
+        label: "Site List File"
+        description: "CSV or Excel file containing the list of clinical sites to match against CTMS"
         data_type: file
-    optional_parameters:
-      - name: merge_strategy
-        label: "Conflict Resolution Strategy"
-        description: "How to handle conflicting values between the two lists"
-        data_type: choice
-        choices:
-          - prefer_cro
-          - prefer_sponsor
-          - flag_conflicts
-        default: flag_conflicts
 
   trial_benchmarking:
     display_name: "Clinical Trial Benchmarking"

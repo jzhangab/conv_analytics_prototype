@@ -42,10 +42,10 @@ def parse_parameter_extraction(data: dict) -> dict:
     return {k: v for k, v in data.items()}
 
 
-def parse_site_merger_response(data: dict) -> tuple[list, dict]:
-    """Returns (merged_sites list, summary dict)."""
-    require_keys(data, ["merged_sites", "summary"], context="site_merger")
-    return data["merged_sites"], data["summary"]
+def parse_site_matching_response(data: dict) -> tuple[list, list, dict]:
+    """Returns (matches list, unmatched_indices list, summary dict)."""
+    require_keys(data, ["matches", "unmatched_indices", "summary"], context="site_matching")
+    return data["matches"], data["unmatched_indices"], data["summary"]
 
 
 def parse_benchmarking_response(data: dict) -> dict:
