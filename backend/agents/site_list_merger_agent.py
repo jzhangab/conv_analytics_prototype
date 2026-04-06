@@ -1,11 +1,11 @@
 """
 Site List Merger SubAgent.
-Accepts two uploaded DataFrames (CRO and sponsor) and merges them via LLM.
+Accepts an uploaded CRO DataFrame and loads the sponsor list from data/CTMS_SITES.csv,
+then merges them via LLM.
 """
 import io
-import json
 import logging
-import uuid
+from pathlib import Path
 
 import pandas as pd
 
@@ -19,6 +19,8 @@ from backend.utils.formatters import dict_list_to_table, format_merger_summary
 logger = logging.getLogger(__name__)
 
 MAX_ROWS_FOR_LLM = 300   # Safety cap — very large lists are chunked or truncated
+
+_CTMS_FILE = Path(__file__).parent.parent.parent / "data" / "CTMS_SITES.csv"
 
 
 def _df_to_text(df: pd.DataFrame, max_rows: int = MAX_ROWS_FOR_LLM) -> str:
@@ -41,22 +43,34 @@ class SiteListMergerAgent(BaseAgent):
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         cro_file_info = state.uploaded_files.get("cro_file")
-        sponsor_file_info = state.uploaded_files.get("sponsor_file")
 
-        if not cro_file_info or not sponsor_file_info:
-            missing = []
-            if not cro_file_info:
-                missing.append("CRO site list file")
-            if not sponsor_file_info:
-                missing.append("sponsor site list file")
+        if not cro_file_info:
             return AgentResult(
                 success=False,
                 text_response="",
-                error_message=f"Missing uploaded file(s): {', '.join(missing)}."
+                error_message="Missing uploaded file: CRO site list file."
+            )
+
+        # Load sponsor sites from CTMS_SITES.csv
+        if not _CTMS_FILE.exists():
+            return AgentResult(
+                success=False,
+                text_response="",
+                error_message=f"Sponsor site file not found at {_CTMS_FILE}. "
+                              "Please ensure data/CTMS_SITES.csv exists in the project."
+            )
+        try:
+            sponsor_df = pd.read_csv(_CTMS_FILE)
+            sponsor_df.columns = [str(c).strip() for c in sponsor_df.columns]
+            sponsor_df = sponsor_df.where(pd.notna(sponsor_df), None)
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                text_response="",
+                error_message=f"Could not load sponsor site file: {e}"
             )
 
         cro_df = pd.DataFrame(cro_file_info["data"])
-        sponsor_df = pd.DataFrame(sponsor_file_info["data"])
         merge_strategy = params.get("merge_strategy", "flag_conflicts")
 
         cro_text = _df_to_text(cro_df)

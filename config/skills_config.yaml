@@ -9,10 +9,6 @@ skills:
         label: "CRO Site List File"
         description: "CSV or Excel file containing the CRO's list of clinical sites"
         data_type: file
-      - name: sponsor_file
-        label: "Sponsor Site List File"
-        description: "CSV or Excel file containing the sponsor's list of clinical sites"
-        data_type: file
     optional_parameters:
       - name: merge_strategy
         label: "Conflict Resolution Strategy"
