@@ -12,12 +12,13 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(self, config: dict):
         self.connection_id = config["llm_mesh"]["connection_id"]
-        self.max_tokens = config["llm_mesh"].get("max_tokens", 4096)
+        self.max_tokens = config["llm_mesh"].get("max_tokens", 16384)
         self.temp_classify = config["llm_mesh"].get("temperature_classify", 0.1)
         self.temp_extract = config["llm_mesh"].get("temperature_extract", 0.1)
         self.temp_agents = config["llm_mesh"].get("temperature_agents", 0.3)
         self.temp_deterministic = config["llm_mesh"].get("temperature_deterministic", 0.0)
         self._client = None
+        self.call_log: list = []
 
     def _get_dataiku_client(self):
         """Lazy-initialize the Dataiku API client."""
@@ -48,10 +49,12 @@ class LLMClient:
                 pass  # older Dataiku SDK versions may not support this
 
             resp = completion.execute()
+            self.call_log.append({"messages": messages, "response": resp.text})
             return resp.text
 
         except Exception as e:
             logger.error("LLM Mesh call failed: %s", e)
+            self.call_log.append({"messages": messages, "response": f"ERROR: {e}", "error": True})
             raise
 
     def complete_json(self, messages: list[dict], temperature: float = None) -> dict:
