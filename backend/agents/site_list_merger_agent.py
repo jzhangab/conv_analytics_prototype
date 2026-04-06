@@ -95,20 +95,36 @@ class SiteListMergerAgent(BaseAgent):
 
 def parse_uploaded_file(file_storage) -> dict:
     """
-    Parse a Werkzeug FileStorage object (CSV or Excel) into a dict with
-    keys: filename, data (list of dicts), columns (list of str).
+    Parse a file (CSV or Excel) into a dict with keys: filename, data, columns.
+    Accepts Werkzeug FileStorage objects or any object with .filename and .read().
+    Falls back to content-based detection when the extension is missing or unknown.
     Raises ValueError on unsupported format or parse error.
     """
     filename = file_storage.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
+    raw = file_storage.read()
+    buf = io.BytesIO(raw)
+
     try:
         if ext == "csv":
-            df = pd.read_csv(io.BytesIO(file_storage.read()))
+            df = pd.read_csv(buf)
         elif ext in ("xlsx", "xls"):
-            df = pd.read_excel(io.BytesIO(file_storage.read()))
+            df = pd.read_excel(buf)
         else:
-            raise ValueError(f"Unsupported file type: .{ext}. Please upload CSV or Excel files.")
+            # Extension unknown — try CSV first, then Excel
+            try:
+                df = pd.read_csv(io.BytesIO(raw))
+            except Exception:
+                try:
+                    df = pd.read_excel(io.BytesIO(raw))
+                except Exception:
+                    raise ValueError(
+                        f"Could not parse file '{filename or 'upload'}' as CSV or Excel. "
+                        "Please upload a .csv, .xlsx, or .xls file."
+                    )
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"Could not parse file '{filename}': {e}")
 
