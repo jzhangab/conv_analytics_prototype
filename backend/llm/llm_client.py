@@ -73,6 +73,52 @@ class LLMClient:
             ).strip()
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse LLM JSON output: %s\nRaw: %s", e, raw)
-            raise ValueError(f"LLM returned non-JSON output: {raw[:200]}")
+        except json.JSONDecodeError:
+            # Attempt to repair truncated JSON (e.g. response cut off by token limit)
+            repaired = self._repair_json(text)
+            try:
+                result = json.loads(repaired)
+                logger.warning("Parsed repaired (truncated) JSON — some fields may be incomplete")
+                return result
+            except json.JSONDecodeError as e:
+                logger.error("Failed to parse LLM JSON output: %s\nRaw: %s", e, raw)
+                raise ValueError(f"LLM returned non-JSON output: {raw[:200]}")
+
+    @staticmethod
+    def _repair_json(text: str) -> str:
+        """Close unclosed strings, arrays, and objects to make truncated JSON parseable."""
+        # Walk the string tracking open/close state
+        in_string = False
+        escaped = False
+        stack = []
+        last_complete = 0
+
+        for i, ch in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\" and in_string:
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in "{[":
+                stack.append(ch)
+            elif ch == "}" and stack and stack[-1] == "{":
+                stack.pop()
+                last_complete = i
+            elif ch == "]" and stack and stack[-1] == "[":
+                stack.pop()
+                last_complete = i
+
+        # If we're mid-string, close it first
+        if in_string:
+            text += '"'
+        # Close open arrays then objects
+        closers = {"{": "}", "[": "]"}
+        for opener in reversed(stack):
+            text += closers[opener]
+        return text
