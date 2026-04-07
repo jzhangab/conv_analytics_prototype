@@ -19,7 +19,9 @@ from datetime import datetime
 
 from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
-from backend.llm.prompt_templates import CLARIFICATION_MESSAGE
+from backend.llm.prompt_templates import (CLARIFICATION_MESSAGE,
+                                            DATA_REASONING_SYSTEM,
+                                            DATA_REASONING_USER)
 from backend.orchestrator.confirmation_manager import (build_confirmation_prompt,
                                                         parse_confirmation_reply)
 from backend.orchestrator.intent_classifier import classify_intent
@@ -175,6 +177,10 @@ class Orchestrator:
             msg = CLARIFICATION_MESSAGE
             return self._build_response(message=msg, state=state)
 
+        # Data reasoning — answer follow-up questions about prior results
+        if intent == "data_reasoning":
+            return self._handle_reasoning(state, user_message, history)
+
         # Intent recognized — set active skill and extract params
         state.active_skill = intent
         state.fsm_state = FSMState.PARAMETER_GATHERING
@@ -293,6 +299,88 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _handle_reasoning(self, state: ConversationState, user_message: str, history: list) -> dict:
+        """Answer a follow-up analytical question grounded in all prior skill results."""
+        if not state.prior_results:
+            msg = (
+                "I don't have any generated results to reason about yet. "
+                "Please run one of the analytical tools first — for example, ask me to "
+                "forecast enrollment or benchmark a trial — then I can answer questions about the output."
+            )
+            return self._build_response(message=msg, state=state)
+
+        results_context = self._format_results_context(state)
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
+        ) or "(no prior turns)"
+
+        messages = [
+            {"role": "system", "content": DATA_REASONING_SYSTEM},
+            {"role": "user", "content": DATA_REASONING_USER.format(
+                results_context=results_context,
+                history=history_text,
+                user_message=user_message,
+            )},
+        ]
+
+        try:
+            answer = self.llm.complete(messages, temperature=self.llm.temp_agents)
+        except Exception as e:
+            logger.error("Data reasoning LLM call failed: %s", e)
+            return self._build_error(f"Reasoning call failed: {e}")
+
+        # Tag this call in the log so the trace pane labels it correctly
+        if self.llm.call_log:
+            self.llm.call_log[-1]["label"] = "Data Reasoning"
+
+        return self._build_response(message=answer, state=state)
+
+    def _format_results_context(self, state: ConversationState) -> str:
+        """Serialise all prior SkillResults into a readable text block for the reasoning prompt."""
+        SKILL_LABELS = {
+            "site_list_matching": "Site List Matching",
+            "site_list_merger":   "Site List Matching",
+            "trial_benchmarking": "Trial Benchmarking",
+            "drug_reimbursement": "Drug Reimbursement Assessment",
+            "enrollment_forecasting": "Enrollment Forecasting",
+        }
+        MAX_TABLE_ROWS = 30
+        MAX_TEXT_CHARS = 3000
+
+        blocks = []
+        for i, result in enumerate(state.prior_results, 1):
+            label = SKILL_LABELS.get(result.skill_id, result.skill_id)
+            params_str = ", ".join(
+                f"{k}={v}" for k, v in result.parameters_used.items() if v is not None
+            )
+            lines = [
+                f"=== Result {i}: {label} ===",
+                f"Parameters: {params_str}" if params_str else "",
+                "",
+                "Summary / Narrative:",
+                result.text_response[:MAX_TEXT_CHARS]
+                + ("... [truncated]" if len(result.text_response) > MAX_TEXT_CHARS else ""),
+            ]
+
+            if result.table_data:
+                cols = result.table_columns or (list(result.table_data[0].keys()) if result.table_data else [])
+                rows = result.table_data[:MAX_TABLE_ROWS]
+                header = " | ".join(str(c) for c in cols)
+                sep = "-" * len(header)
+                table_lines = [header, sep]
+                for row in rows:
+                    if isinstance(row, dict):
+                        table_lines.append(" | ".join(str(row.get(c, "")) for c in cols))
+                    else:
+                        table_lines.append(" | ".join(str(v) for v in row))
+                if len(result.table_data) > MAX_TABLE_ROWS:
+                    table_lines.append(f"... [{len(result.table_data) - MAX_TABLE_ROWS} more rows not shown]")
+                lines += ["", "Tabular Data:", *table_lines]
+
+            blocks.append("\n".join(l for l in lines if l is not None))
+
+        return "\n\n".join(blocks)
 
     def _parse_skill_selection(self, message: str) -> str | None:
         """Handle numbered skill selection from clarification menu."""

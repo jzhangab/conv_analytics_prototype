@@ -14,12 +14,16 @@ logger = logging.getLogger(__name__)
 
 VALID_INTENTS = {
     "site_list_merger",
+    "site_list_matching",
     "trial_benchmarking",
     "drug_reimbursement",
     "enrollment_forecasting",
+    "data_reasoning",
 }
 
 CONFIDENCE_THRESHOLD = 0.70
+# data_reasoning uses a lower threshold — follow-up questions are phrased many ways
+DATA_REASONING_THRESHOLD = 0.60
 
 
 def classify_intent(
@@ -48,7 +52,11 @@ def classify_intent(
         logger.error("Intent classification failed: %s", e)
         return None, 0.0, "Classification error"
 
-    if intent not in VALID_INTENTS or confidence < CONFIDENCE_THRESHOLD:
+    if intent not in VALID_INTENTS:
+        return None, confidence, reasoning
+
+    threshold = DATA_REASONING_THRESHOLD if intent == "data_reasoning" else CONFIDENCE_THRESHOLD
+    if confidence < threshold:
         return None, confidence, reasoning
 
     return intent, confidence, reasoning

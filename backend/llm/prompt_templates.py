@@ -15,6 +15,7 @@ Available skills:
 2. trial_benchmarking — The user wants to benchmark or compare clinical trials by indication, age group, or phase. Keywords: benchmark trials, compare trials, trial landscape, enrollment benchmarks, how do similar trials perform.
 3. drug_reimbursement — The user wants to assess reimbursement likelihood or HTA requirements for a drug by country. Keywords: reimbursement, HTA, market access, payer, coverage, health technology assessment.
 4. enrollment_forecasting — The user wants to forecast or project patient enrollment and/or site activation over time, typically shown as a graph or timeline. Keywords: forecast enrollment, enrollment projection, site activation forecast, recruitment timeline, enrollment curve.
+5. data_reasoning — The user is asking a follow-up analytical or strategic question about results that were already generated in this conversation. They are NOT requesting a new skill run — they want interpretation, recommendations, or deeper analysis of existing output. Keywords: based on this, what does this mean, recommend, suggest, best approach, given these results, what should we do, explain, compare scenarios, implications, study design, next steps, risks, optimize, interpret.
 
 Return a JSON object with exactly these fields:
 {
@@ -26,6 +27,7 @@ Return a JSON object with exactly these fields:
 Rules:
 - If none of the skills clearly match, set intent to "unknown".
 - If the message is ambiguous between two skills, set confidence below 0.7 and explain in reasoning.
+- Prefer data_reasoning when the user's question references prior results or asks "what does this mean / what should I do" style questions.
 - Do not invent new skill names.
 - Return ONLY the JSON object, no markdown fences, no other text."""
 
@@ -266,3 +268,35 @@ Moderate: enrollment completes at month {moderate_months}, peak sites activated:
 Optimistic: enrollment completes at month {optimistic_months}, peak sites activated: {optimistic_peak_sites}
 
 Write a narrative interpretation of these enrollment forecast results."""
+
+
+# ---------------------------------------------------------------------------
+# Data Reasoning — follow-up analytical questions about prior skill results
+# ---------------------------------------------------------------------------
+
+DATA_REASONING_SYSTEM = """You are a senior clinical R&D strategist and data analyst embedded in a clinical analytics chatbot.
+The user has already run one or more analytical tools in this session (enrollment forecasting, trial benchmarking, drug reimbursement assessment, or site list matching). The outputs of those tools are provided to you as context below.
+
+Your job is to answer the user's follow-up question by reasoning carefully over that data.
+
+Guidelines:
+- Ground every claim in the data provided. Quote specific numbers when they support your answer.
+- Think step-by-step before reaching conclusions (you may show brief reasoning steps).
+- Be concrete: give actionable recommendations, not vague generalities.
+- Flag uncertainty clearly when the data does not fully support a conclusion.
+- Structure long answers with markdown headers and bullet points for readability.
+- If the question cannot be answered from the provided data alone, say so and explain what additional information would help.
+- Do not re-run or invent skill outputs — work only with what is given."""
+
+DATA_REASONING_USER = """The following results were generated earlier in this session:
+
+{results_context}
+
+---
+Conversation so far:
+{history}
+
+---
+User question: {user_message}
+
+Reason carefully over the data above and answer the user's question."""
