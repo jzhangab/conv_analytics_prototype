@@ -72,10 +72,13 @@ class Orchestrator:
             if file_key == "protocol_file":
                 file_info = parse_protocol_file(file_storage)
                 state.uploaded_files[file_key] = file_info
-                truncation_note = " *(truncated to 40,000 chars for analysis)*" if file_info.get("was_truncated") else ""
+                fmt = file_info.get("format", "txt")
+                if fmt == "pdf":
+                    size_desc = f"{file_info['total_pages']} pages"
+                else:
+                    size_desc = f"{len(file_info.get('full_text', '')):,} characters"
                 msg = (
-                    f"Protocol uploaded: **{file_info['filename']}** "
-                    f"({file_info['char_count']:,} characters{truncation_note}). "
+                    f"Protocol uploaded: **{file_info['filename']}** ({size_desc}). "
                     "Type **\"analyze\"** to run the study design review."
                 )
                 state.add_message("assistant", msg)
@@ -427,8 +430,9 @@ class Orchestrator:
             "uploaded_files": {
                 k: {
                     "filename": v["filename"],
-                    "rows": len(v["data"]) if "data" in v else None,
-                    "chars": v.get("char_count"),
+                    "rows":  len(v["data"]) if "data" in v else None,
+                    "pages": v.get("total_pages"),
+                    "chars": len(v.get("full_text", "")) if "full_text" in v else None,
                 }
                 for k, v in state.uploaded_files.items()
             },
