@@ -310,6 +310,7 @@ class Orchestrator:
             table_columns=agent_result.table_columns,
             chart_json=agent_result.chart_json,
             result_id=result_id,
+            skill_id=skill_id,
         )
 
     # ------------------------------------------------------------------
@@ -418,11 +419,13 @@ class Orchestrator:
         table_columns: list = None,
         chart_json: dict = None,
         result_id: str = None,
+        skill_id: str = None,
     ) -> dict:
         return {
             "message": message,
             "fsm_state": state.fsm_state.value,
             "active_skill": state.active_skill,
+            "skill_id": skill_id,
             "table_data": table_data,
             "table_columns": table_columns,
             "chart_json": chart_json,
