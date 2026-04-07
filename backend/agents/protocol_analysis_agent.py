@@ -67,6 +67,15 @@ class ProtocolAnalysisAgent(BaseAgent):
     # Entry point
     # ------------------------------------------------------------------
 
+    def _trace(self, msg: str) -> None:
+        """Append a synthetic progress entry visible in the LLM trace pane."""
+        self.llm.call_log.append({
+            "messages": [],
+            "response": msg,
+            "synthetic": True,
+            "label": "Protocol Analysis",
+        })
+
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         file_info = state.uploaded_files.get("protocol_file")
         if not file_info:
@@ -75,8 +84,18 @@ class ProtocolAnalysisAgent(BaseAgent):
                 error_message="No protocol file found. Please upload a PDF, DOCX, or TXT protocol first.",
             )
 
-        fmt      = file_info.get("format", "txt")
         filename = file_info["filename"]
+        fmt      = file_info.get("format")
+
+        # Backward-compat: old parse_protocol_file returned {"text": ...} with no "format" key.
+        # Treat those as full-text regardless of file extension.
+        if fmt is None:
+            if "pages" in file_info:
+                fmt = "pdf"
+            else:
+                fmt = "txt"
+
+        self._trace(f"Starting analysis of '{filename}' (format: {fmt})")
 
         if fmt == "pdf":
             return self._run_pdf(file_info, filename)
@@ -87,51 +106,72 @@ class ProtocolAnalysisAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _run_pdf(self, file_info: dict, filename: str) -> AgentResult:
+        pages = file_info.get("pages", [])
+        if not pages:
+            self._trace("No page data found — falling back to full-text analysis.")
+            return self._run_full_text(file_info, filename)
+
         # Step 1: locate Table of Contents
-        logger.info("Searching for TOC in first 10 pages of %s", filename)
+        self._trace(f"Step 1/3 — Searching for Table of Contents in first {min(10, len(pages))} pages...")
         toc_result = self._find_toc(file_info)
 
         if not toc_result or not toc_result.get("found"):
             notes = (toc_result or {}).get("notes", "")
-            return AgentResult(
-                success=False, text_response="",
-                error_message=(
-                    f"Could not find a Table of Contents in the first 10 pages of '{filename}'. "
-                    + (f"Note: {notes}. " if notes else "")
-                    + "Please ensure the protocol has a TOC within its first 10 pages."
-                ),
+            self._trace(
+                f"TOC not found ({notes}). Falling back to full-document analysis "
+                f"({len(pages)} pages, ~{sum(len(p) for p in pages):,} chars)."
             )
+            # Synthesise a full_text from all pages and fall back
+            full_text = "\n\n".join(p for p in pages if p.strip())
+            fallback_info = {**file_info, "format": "txt", "full_text": full_text}
+            return self._run_full_text(fallback_info, filename)
 
         sections_info  = toc_result.get("sections", {})
         found_sections = [
             k for k in TARGET_SECTIONS
             if isinstance((sections_info.get(k) or {}).get("protocol_page"), int)
         ]
+        all_toc = toc_result.get("all_sections", [])
+        self._trace(
+            f"TOC found — {len(all_toc)} sections total. "
+            f"Target sections located: {[SECTION_LABELS[k] for k in found_sections]}"
+        )
 
         if not found_sections:
-            return AgentResult(
-                success=False, text_response="",
-                error_message=(
-                    "A TOC was found but none of the target sections (Objectives/Endpoints, "
-                    "Trial Design, Trial Population) could be located within it."
-                ),
+            full_text = "\n\n".join(p for p in pages if p.strip())
+            fallback_info = {**file_info, "format": "txt", "full_text": full_text}
+            self._trace(
+                "Target sections not identified in TOC. Falling back to full-document analysis."
             )
+            return self._run_full_text(fallback_info, filename)
 
         # Step 2: extract section text
-        logger.info("Extracting sections from %s: %s", filename, found_sections)
+        self._trace("Step 2/3 — Extracting section text using TOC page boundaries...")
         sections = self._extract_sections(file_info, toc_result)
+        for key in TARGET_SECTIONS:
+            text = sections.get(key)
+            label = SECTION_LABELS[key]
+            if text:
+                self._trace(f"  '{label}': {len(text):,} chars extracted.")
+            else:
+                self._trace(f"  '{label}': could not extract (page mapping may have failed).")
 
         # Step 3: per-section LLM analysis
+        self._trace("Step 3/3 — Running focused LLM analysis on each section...")
         section_analyses: dict[str, dict] = {}
         for key in TARGET_SECTIONS:
             text = sections.get(key)
             if not text:
-                logger.info("Section '%s' not extracted — skipping", key)
                 continue
-            logger.info("Analysing '%s' (%d chars)", key, len(text))
+            label = SECTION_LABELS[key]
+            self._trace(f"  Analysing '{label}'...")
             analysis = self._analyze_section(key, text, filename)
             if analysis:
+                n = len(analysis.get("findings", []))
+                self._trace(f"  '{label}' complete — {n} findings.")
                 section_analyses[key] = analysis
+            else:
+                self._trace(f"  '{label}' analysis failed (LLM error).")
 
         if not section_analyses:
             return AgentResult(
