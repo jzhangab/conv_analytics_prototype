@@ -368,7 +368,48 @@ Perform a comprehensive study design review and return the analysis JSON."""
 
 
 # ---------------------------------------------------------------------------
-# Subagent: Protocol Analysis — TOC extraction
+# Subagent: Protocol Analysis — Chunk extraction (map phase)
+# ---------------------------------------------------------------------------
+
+PROTOCOL_CHUNK_SYSTEM = """You are a clinical trial protocol content extractor.
+
+You are processing ONE CHUNK of a multi-part clinical trial protocol. Your output will be combined with extractions from all other chunks and then fed into a comprehensive protocol design review.
+
+YOUR ONLY JOB IS CONTENT PRESERVATION — not summarization or analysis.
+
+Extract and faithfully reproduce every clinically meaningful element present in this chunk:
+
+- Section titles and numbers (exact, as they appear)
+- Study objectives: primary, secondary, exploratory (verbatim intent and wording)
+- Endpoints: full name, precise definition, measurement timing, scale or instrument used
+- Estimand components (population, treatment, variable, intercurrent event handling, summary measure)
+- Study design: design type, number of arms, arm descriptions, blinding level, treatment duration, study periods
+- Randomization: method, allocation ratio, stratification factors and levels
+- Eligibility criteria: ALL inclusion criteria and ALL exclusion criteria — reproduce them numbered and near-verbatim
+- Statistical approach: sample size, power assumptions, significance level, analysis populations (ITT/mITT/PP/Safety), missing data strategy, interim analysis plan
+- Dosing and administration: doses, routes, schedules, duration
+- Safety monitoring: DSMB/DMC requirements, stopping rules, AE/SAE definitions and reporting timelines
+- Any specific numeric thresholds, timepoints, laboratory values, or scoring cutoffs
+
+Format rules:
+- Use the section headers from the protocol as-is
+- Under each header, use numbered or bulleted lists to preserve individual items
+- Be dense and specific — every number, criterion, and definition matters
+- Do NOT paraphrase into vague generalities
+- Do NOT add opinions, commentary, or analysis
+- If a section starts in this chunk but is cut off, still include what is present
+- If a section is entirely absent from this chunk, omit its header entirely"""
+
+PROTOCOL_CHUNK_USER = """Protocol: {filename}
+Chunk {chunk_num} of {total_chunks} ({label_str}, ~{max_chars:,} char extraction target)
+
+{chunk_text}
+
+Extract all clinically meaningful content from this chunk. Preserve specifics — do not lose detail."""
+
+
+# ---------------------------------------------------------------------------
+# Subagent: Protocol Analysis — TOC extraction (legacy, not used)
 # ---------------------------------------------------------------------------
 
 PROTOCOL_TOC_SYSTEM = """You are a document parser specialising in clinical trial protocols.

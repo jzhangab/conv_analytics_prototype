@@ -1,15 +1,11 @@
 """
-Protocol Analysis SubAgent — TOC-driven, per-section LLM analysis.
+Protocol Analysis SubAgent — map-reduce chunk-and-summarize approach.
 
-PDF workflow:
-  1. Extract text from first 10 PDF pages → LLM locates Table of Contents
-  2. Parse TOC to identify start pages for: Objectives/Endpoints, Trial Design, Trial Population
-  3. Build a protocol-page → PDF-index map (via page labels or text scanning)
-  4. Extract each section's text using page boundaries from the TOC
-  5. Run a focused LLM analysis on each section independently
-  6. Combine all findings into one structured result
-
-DOCX / TXT fallback: full-text single-call analysis using the general prompt.
+Workflow for any format (PDF / DOCX / TXT):
+  1. Split the document into overlapping chunks
+  2. LLM extracts and preserves all clinically meaningful content from each chunk
+  3. Chunk extractions are concatenated into a single condensed document
+  4. Single comprehensive protocol design analysis is run on the condensed document
 """
 from __future__ import annotations
 
@@ -22,37 +18,24 @@ from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (
     PROTOCOL_ANALYSIS_SYSTEM,
     PROTOCOL_ANALYSIS_USER,
-    PROTOCOL_DESIGN_SYSTEM,
-    PROTOCOL_DESIGN_USER,
-    PROTOCOL_OBJECTIVES_SYSTEM,
-    PROTOCOL_OBJECTIVES_USER,
-    PROTOCOL_POPULATION_SYSTEM,
-    PROTOCOL_POPULATION_USER,
-    PROTOCOL_TOC_SYSTEM,
-    PROTOCOL_TOC_USER,
+    PROTOCOL_CHUNK_SYSTEM,
+    PROTOCOL_CHUNK_USER,
 )
 from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-MAX_SECTION_CHARS = 20_000   # per-section cap sent to LLM (~5 k tokens)
-MAX_FULL_TEXT_CHARS = 40_000 # fallback cap for DOCX / TXT
+# Chunking parameters
+CHUNK_PAGES   = 8       # PDF pages per chunk
+OVERLAP_PAGES = 1       # pages of overlap between adjacent PDF chunks
+CHUNK_CHARS   = 20_000  # chars per chunk for text documents
+OVERLAP_CHARS = 1_000   # chars of overlap between adjacent text chunks
+
+# Output limits
+MAX_CHUNK_EXTRACTION = 4_000   # soft char cap per chunk extraction (guidance to LLM)
+MAX_COMBINED         = 90_000  # hard cap on combined extractions sent to final analysis
 
 SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "suggestion": 3}
-
-SECTION_LABELS = {
-    "objectives_and_endpoints": "Objectives & Endpoints",
-    "trial_design":             "Trial Design",
-    "trial_population":         "Trial Population",
-}
-
-SECTION_PROMPTS = {
-    "objectives_and_endpoints": (PROTOCOL_OBJECTIVES_SYSTEM, PROTOCOL_OBJECTIVES_USER),
-    "trial_design":             (PROTOCOL_DESIGN_SYSTEM,      PROTOCOL_DESIGN_USER),
-    "trial_population":         (PROTOCOL_POPULATION_SYSTEM,  PROTOCOL_POPULATION_USER),
-}
-
-TARGET_SECTIONS = ["objectives_and_endpoints", "trial_design", "trial_population"]
 
 
 class ProtocolAnalysisAgent(BaseAgent):
@@ -64,17 +47,23 @@ class ProtocolAnalysisAgent(BaseAgent):
         self.llm = llm_client
 
     # ------------------------------------------------------------------
-    # Entry point
+    # Trace helper
     # ------------------------------------------------------------------
 
     def _trace(self, msg: str) -> None:
         """Append a synthetic progress entry visible in the LLM trace pane."""
+        if not hasattr(self.llm, "call_log"):
+            self.llm.call_log = []
         self.llm.call_log.append({
             "messages": [],
             "response": msg,
             "synthetic": True,
             "label": "Protocol Analysis",
         })
+
+    # ------------------------------------------------------------------
+    # Entry point
+    # ------------------------------------------------------------------
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         file_info = state.uploaded_files.get("protocol_file")
@@ -87,317 +76,185 @@ class ProtocolAnalysisAgent(BaseAgent):
         filename = file_info["filename"]
         fmt      = file_info.get("format")
 
-        # Backward-compat: old parse_protocol_file returned {"text": ...} with no "format" key.
-        # Treat those as full-text regardless of file extension.
+        # Backward-compat: old parse_protocol_file returned {"text":...} with no "format" key
         if fmt is None:
-            if "pages" in file_info:
-                fmt = "pdf"
-            else:
-                fmt = "txt"
+            fmt = "pdf" if "pages" in file_info else "txt"
 
         self._trace(f"Starting analysis of '{filename}' (format: {fmt})")
 
         if fmt == "pdf":
             return self._run_pdf(file_info, filename)
-        return self._run_full_text(file_info, filename)
+        return self._run_text(file_info, filename)
 
     # ------------------------------------------------------------------
-    # PDF workflow
+    # Route to map-reduce
     # ------------------------------------------------------------------
 
     def _run_pdf(self, file_info: dict, filename: str) -> AgentResult:
         pages = file_info.get("pages", [])
         if not pages:
-            self._trace("No page data found — falling back to full-text analysis.")
-            return self._run_full_text(file_info, filename)
-
-        # Step 1: locate Table of Contents
-        self._trace(f"Step 1/3 — Searching for Table of Contents in first {min(10, len(pages))} pages...")
-        toc_result = self._find_toc(file_info)
-
-        if not toc_result or not toc_result.get("found"):
-            notes = (toc_result or {}).get("notes", "")
-            self._trace(
-                f"TOC not found ({notes}). Falling back to full-document analysis "
-                f"({len(pages)} pages, ~{sum(len(p) for p in pages):,} chars)."
-            )
-            # Synthesise a full_text from all pages and fall back
-            full_text = "\n\n".join(p for p in pages if p.strip())
-            fallback_info = {**file_info, "format": "txt", "full_text": full_text}
-            return self._run_full_text(fallback_info, filename)
-
-        sections_info  = toc_result.get("sections", {})
-        found_sections = [
-            k for k in TARGET_SECTIONS
-            if isinstance((sections_info.get(k) or {}).get("protocol_page"), int)
-        ]
-        all_toc = toc_result.get("all_sections", [])
-        self._trace(
-            f"TOC found — {len(all_toc)} sections total. "
-            f"Target sections located: {[SECTION_LABELS[k] for k in found_sections]}"
-        )
-
-        if not found_sections:
-            full_text = "\n\n".join(p for p in pages if p.strip())
-            fallback_info = {**file_info, "format": "txt", "full_text": full_text}
-            self._trace(
-                "Target sections not identified in TOC. Falling back to full-document analysis."
-            )
-            return self._run_full_text(fallback_info, filename)
-
-        # Step 2: extract section text
-        self._trace("Step 2/3 — Extracting section text using TOC page boundaries...")
-        sections = self._extract_sections(file_info, toc_result)
-        for key in TARGET_SECTIONS:
-            text = sections.get(key)
-            label = SECTION_LABELS[key]
-            if text:
-                self._trace(f"  '{label}': {len(text):,} chars extracted.")
-            else:
-                self._trace(f"  '{label}': could not extract (page mapping may have failed).")
-
-        # Step 3: per-section LLM analysis
-        self._trace("Step 3/3 — Running focused LLM analysis on each section...")
-        section_analyses: dict[str, dict] = {}
-        for key in TARGET_SECTIONS:
-            text = sections.get(key)
-            if not text:
-                continue
-            label = SECTION_LABELS[key]
-            self._trace(f"  Analysing '{label}'...")
-            analysis = self._analyze_section(key, text, filename)
-            if analysis:
-                n = len(analysis.get("findings", []))
-                self._trace(f"  '{label}' complete — {n} findings.")
-                section_analyses[key] = analysis
-            else:
-                self._trace(f"  '{label}' analysis failed (LLM error).")
-
-        if not section_analyses:
             return AgentResult(
                 success=False, text_response="",
-                error_message="Could not extract or analyse any of the target protocol sections.",
+                error_message="No page text could be extracted from the uploaded PDF.",
             )
+        # Build overlapping page chunks
+        chunks: list[tuple[int, int, str]] = []  # (start_page_label, end_page_label, text)
+        i = 0
+        while i < len(pages):
+            end = min(i + CHUNK_PAGES, len(pages))
+            chunk_text = "\n\n".join(p for p in pages[i:end] if p.strip())
+            if chunk_text.strip():
+                chunks.append((i + 1, end, chunk_text))
+            if end >= len(pages):
+                break
+            i += CHUNK_PAGES - OVERLAP_PAGES
 
-        return self._build_combined_result(section_analyses, filename, toc_result)
-
-    # ── TOC extraction ────────────────────────────────────────────────
-
-    def _find_toc(self, file_info: dict) -> dict | None:
-        pages = file_info.get("pages", [])
-        toc_pages = pages[:10]
-        if not toc_pages:
-            return None
-
-        toc_text = "\n\n".join(
-            f"=== PDF Scan Page {i + 1} ===\n{text}"
-            for i, text in enumerate(toc_pages)
-            if text.strip()
+        total_chars = sum(len(p) for p in pages)
+        self._trace(
+            f"Document: {len(pages)} pages, ~{total_chars:,} chars "
+            f"→ split into {len(chunks)} chunks of ~{CHUNK_PAGES} pages."
         )
-        messages = [
-            {"role": "system", "content": PROTOCOL_TOC_SYSTEM},
-            {"role": "user",   "content": PROTOCOL_TOC_USER.format(toc_pages_text=toc_text)},
-        ]
-        try:
-            return self.llm.complete_json(messages, temperature=self.llm.temp_deterministic)
-        except Exception as e:
-            logger.error("TOC extraction failed: %s", e)
-            return None
+        return self._map_reduce(chunks, filename)
 
-    # ── Section text extraction ───────────────────────────────────────
-
-    def _extract_sections(self, file_info: dict, toc_result: dict) -> dict[str, str | None]:
-        sections_info = toc_result.get("sections", {})
-        all_sections  = toc_result.get("all_sections", [])
-        pages         = file_info.get("pages", [])
-        page_index    = file_info.get("page_index", {})
-        total         = len(pages)
-
-        # Sort every TOC entry by page number for boundary detection
-        ordered = sorted(
-            [s for s in all_sections if isinstance(s.get("protocol_page"), int)],
-            key=lambda s: s["protocol_page"],
-        )
-
-        result: dict[str, str | None] = {}
-        for key in TARGET_SECTIONS:
-            info    = (sections_info.get(key) or {})
-            start_p = info.get("protocol_page")
-            if not isinstance(start_p, int):
-                result[key] = None
-                continue
-
-            # End page = first TOC entry whose page number > start_p
-            end_p: int | None = None
-            for s in ordered:
-                if s["protocol_page"] > start_p:
-                    end_p = s["protocol_page"]
-                    break
-
-            start_idx = self._protocol_page_to_idx(start_p, page_index, total)
-            if start_idx is None:
-                logger.warning("Cannot map protocol page %d to PDF index", start_p)
-                result[key] = None
-                continue
-
-            if end_p is not None:
-                end_idx = self._protocol_page_to_idx(end_p, page_index, total)
-                if end_idx is None:
-                    end_idx = min(start_idx + 25, total)
-            else:
-                end_idx = min(start_idx + 25, total)
-
-            text = "\n\n".join(p for p in pages[start_idx:end_idx] if p.strip())
-            if len(text) > MAX_SECTION_CHARS:
-                text = (
-                    text[:MAX_SECTION_CHARS]
-                    + f"\n\n[Truncated — showing first {MAX_SECTION_CHARS:,} chars of this section]"
-                )
-            result[key] = text or None
-
-        return result
-
-    @staticmethod
-    def _protocol_page_to_idx(protocol_page: int, page_index: dict, total: int) -> int | None:
-        """Map a protocol page number to a 0-based PDF index, tolerating small offsets."""
-        idx = page_index.get(protocol_page)
-        if idx is not None:
-            return min(idx, total - 1)
-        for delta in (1, -1, 2, -2, 3):
-            idx = page_index.get(protocol_page + delta)
-            if idx is not None:
-                return min(idx, total - 1)
-        return None
-
-    # ── Per-section analysis ─────────────────────────────────────────
-
-    def _analyze_section(self, section_key: str, text: str, filename: str) -> dict | None:
-        system_prompt, user_prompt = SECTION_PROMPTS[section_key]
-        label = SECTION_LABELS[section_key]
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_prompt.format(
-                filename=filename,
-                section_label=label,
-                section_text=text,
-            )},
-        ]
-        try:
-            return self.llm.complete_json(messages, temperature=self.llm.temp_agents)
-        except Exception as e:
-            logger.error("Section analysis failed for '%s': %s", section_key, e)
-            return None
-
-    # ── Combine results ───────────────────────────────────────────────
-
-    def _build_combined_result(
-        self,
-        section_analyses: dict[str, dict],
-        filename: str,
-        toc_result: dict,
-    ) -> AgentResult:
-        all_findings: list[dict] = []
-        section_assessments: dict[str, str] = {}
-        all_strengths: list[str] = []
-
-        for key, analysis in section_analyses.items():
-            label      = SECTION_LABELS.get(key, key)
-            assessment = analysis.get("assessment", "")
-            if assessment:
-                section_assessments[label] = assessment
-            for s in analysis.get("strengths", []):
-                all_strengths.append(f"[{label}] {s}")
-            for f in analysis.get("findings", []):
-                all_findings.append({**f, "section": label})
-
-        # Sort by severity
-        all_findings.sort(key=lambda f: SEVERITY_ORDER.get(f.get("severity", "suggestion"), 3))
-
-        # Overall rating from worst severity present
-        if any(f.get("severity") == "critical" for f in all_findings):
-            overall_rating = "Significant Concerns"
-        elif any(f.get("severity") == "major" for f in all_findings):
-            overall_rating = "Needs Improvement"
-        elif all_findings:
-            overall_rating = "Adequate"
-        else:
-            overall_rating = "Strong"
-
-        critical_concerns = [
-            f"[{f['section']}] {f['finding']}"
-            for f in all_findings if f.get("severity") == "critical"
-        ]
-
-        sections_label = ", ".join(
-            SECTION_LABELS[k] for k in section_analyses if k in SECTION_LABELS
-        )
-
-        lines = [
-            f"## Protocol Analysis: {filename}",
-            f"**Overall Rating:** {overall_rating}",
-            f"**Sections Analysed:** {sections_label}",
-            "",
-        ]
-        if all_strengths:
-            lines += ["### Strengths", *[f"- {s}" for s in all_strengths], ""]
-        if critical_concerns:
-            lines += ["### Critical Concerns", *[f"- {c}" for c in critical_concerns], ""]
-        if section_assessments:
-            lines += ["### Section Assessments"]
-            for label, assessment in section_assessments.items():
-                lines.append(f"**{label}:** {assessment}")
-            lines.append("")
-
-        table_data = [
-            {
-                "#":              i + 1,
-                "Section":        f.get("section", ""),
-                "Finding":        f.get("finding", ""),
-                "Severity":       f.get("severity", "").title(),
-                "Recommendation": f.get("recommendation", ""),
-            }
-            for i, f in enumerate(all_findings)
-        ]
-        table_columns = ["#", "Section", "Finding", "Severity", "Recommendation"]
-
-        return AgentResult(
-            success=True,
-            text_response="\n".join(lines),
-            table_data=table_data if table_data else None,
-            table_columns=table_columns if table_data else None,
-        )
-
-    # ------------------------------------------------------------------
-    # DOCX / TXT fallback — full-text single LLM call
-    # ------------------------------------------------------------------
-
-    def _run_full_text(self, file_info: dict, filename: str) -> AgentResult:
-        text = file_info.get("full_text", "")
-        if not text:
+    def _run_text(self, file_info: dict, filename: str) -> AgentResult:
+        # Support old format (has "text" key) and new format (has "full_text" key)
+        text = file_info.get("full_text") or file_info.get("text", "")
+        if not text.strip():
+            # Last resort: stitch pages if present
+            pages = file_info.get("pages", [])
+            text = "\n\n".join(p for p in pages if p.strip())
+        if not text.strip():
             return AgentResult(
                 success=False, text_response="",
                 error_message="Could not extract text from the uploaded file.",
             )
-        if len(text) > MAX_FULL_TEXT_CHARS:
-            text = text[:MAX_FULL_TEXT_CHARS] + f"\n\n[Truncated to {MAX_FULL_TEXT_CHARS:,} chars]"
 
+        # Build overlapping text chunks
+        chunks: list[tuple[int, int, str]] = []
+        i = 0
+        chunk_num = 1
+        while i < len(text):
+            end = min(i + CHUNK_CHARS, len(text))
+            chunk_text = text[i:end]
+            if chunk_text.strip():
+                chunks.append((chunk_num, chunk_num, chunk_text))
+                chunk_num += 1
+            if end >= len(text):
+                break
+            i += CHUNK_CHARS - OVERLAP_CHARS
+
+        self._trace(
+            f"Document: {len(text):,} chars "
+            f"→ split into {len(chunks)} text chunks of ~{CHUNK_CHARS:,} chars."
+        )
+        return self._map_reduce(chunks, filename)
+
+    # ------------------------------------------------------------------
+    # Map phase: extract each chunk
+    # ------------------------------------------------------------------
+
+    def _map_reduce(self, chunks: list[tuple[int, int, str]], filename: str) -> AgentResult:
+        total = len(chunks)
+        if total == 0:
+            return AgentResult(
+                success=False, text_response="",
+                error_message="The document appears to be empty after parsing.",
+            )
+
+        self._trace(f"Phase 1 of 2 — Extracting key content from {total} chunk(s)...")
+
+        extractions: list[str] = []
+        for idx, (start_label, end_label, chunk_text) in enumerate(chunks):
+            label_str = (
+                f"pages {start_label}–{end_label}"
+                if start_label != end_label
+                else f"chunk {start_label}"
+            )
+            self._trace(f"  Extracting {label_str} ({len(chunk_text):,} chars)...")
+            extraction = self._extract_chunk(chunk_text, filename, idx + 1, total, label_str)
+            if extraction:
+                extractions.append(extraction)
+                self._trace(f"  Done — {len(extraction):,} chars extracted.")
+            else:
+                self._trace(f"  Extraction failed for {label_str} — skipping.")
+
+        if not extractions:
+            return AgentResult(
+                success=False, text_response="",
+                error_message="Could not extract content from any part of the document.",
+            )
+
+        # Combine extractions
+        combined = "\n\n" + ("=" * 60) + "\n\n".join(extractions)
+        original_len = len(combined)
+
+        if len(combined) > MAX_COMBINED:
+            # Trim each extraction proportionally to fit within the cap
+            target_per = MAX_COMBINED // len(extractions)
+            trimmed = [e[:target_per] for e in extractions]
+            combined = "\n\n" + ("=" * 60) + "\n\n".join(trimmed)
+            self._trace(
+                f"Combined extractions trimmed from {original_len:,} → {len(combined):,} chars "
+                f"to fit context window."
+            )
+        else:
+            self._trace(
+                f"All {len(extractions)} chunk(s) extracted. "
+                f"Combined document: {len(combined):,} chars."
+            )
+
+        # Reduce phase: full analysis on combined document
+        self._trace("Phase 2 of 2 — Running full protocol design analysis...")
+        return self._run_final_analysis(combined, filename)
+
+    def _extract_chunk(
+        self, chunk_text: str, filename: str, chunk_num: int, total_chunks: int, label_str: str
+    ) -> str | None:
+        messages = [
+            {"role": "system", "content": PROTOCOL_CHUNK_SYSTEM},
+            {"role": "user",   "content": PROTOCOL_CHUNK_USER.format(
+                filename=filename,
+                chunk_num=chunk_num,
+                total_chunks=total_chunks,
+                label_str=label_str,
+                chunk_text=chunk_text,
+                max_chars=MAX_CHUNK_EXTRACTION,
+            )},
+        ]
+        try:
+            return self.llm.complete(messages, temperature=self.llm.temp_deterministic)
+        except Exception as e:
+            logger.error("Chunk %d extraction failed: %s", chunk_num, e)
+            return None
+
+    # ------------------------------------------------------------------
+    # Reduce phase: final analysis
+    # ------------------------------------------------------------------
+
+    def _run_final_analysis(self, combined_text: str, filename: str) -> AgentResult:
         messages = [
             {"role": "system", "content": PROTOCOL_ANALYSIS_SYSTEM},
             {"role": "user",   "content": PROTOCOL_ANALYSIS_USER.format(
-                filename=filename, protocol_text=text,
+                filename=filename,
+                protocol_text=combined_text,
             )},
         ]
         try:
             data = self.llm.complete_json(messages, temperature=self.llm.temp_agents)
         except Exception as e:
-            logger.error("Full-text protocol analysis failed: %s", e)
+            logger.error("Final protocol analysis failed: %s", e)
             return AgentResult(
                 success=False, text_response="",
                 error_message=f"Protocol analysis failed: {e}",
             )
-        return self._format_full_text_result(data, filename)
+        self._trace("Analysis complete.")
+        return self._format_result(data, filename)
 
-    def _format_full_text_result(self, data: dict, filename: str) -> AgentResult:
+    # ------------------------------------------------------------------
+    # Format final output
+    # ------------------------------------------------------------------
+
+    def _format_result(self, data: dict, filename: str) -> AgentResult:
         rating   = data.get("overall_rating", "").replace("_", " ").title()
         findings = sorted(
             data.get("findings", []),
@@ -406,7 +263,9 @@ class ProtocolAnalysisAgent(BaseAgent):
         lines = [
             f"## Protocol Analysis: {filename}",
             f"**Overall Rating:** {rating}",
-            "", "### Executive Summary", data.get("executive_summary", ""),
+            "",
+            "### Executive Summary",
+            data.get("executive_summary", ""),
         ]
         if data.get("strengths"):
             lines += ["", "### Strengths", *[f"- {s}" for s in data["strengths"]]]
@@ -444,7 +303,7 @@ def parse_protocol_file(file_storage) -> dict:
     """
     Parse a protocol file and return a format-specific dict.
 
-    PDF  → {"filename", "format":"pdf", "pages":[str], "page_index":{int:int}, "total_pages":int}
+    PDF  → {"filename", "format":"pdf", "pages":[str], "total_pages":int}
     DOCX → {"filename", "format":"docx", "full_text":str}
     TXT  → {"filename", "format":"txt",  "full_text":str}
 
@@ -483,59 +342,12 @@ def _parse_pdf(raw: bytes, filename: str) -> dict:
             "The PDF may be scanned/image-based. Please provide a text-selectable PDF."
         )
 
-    page_index = _build_page_index(reader, pages)
     return {
         "filename":    filename,
         "format":      "pdf",
         "pages":       pages,
-        "page_index":  page_index,
         "total_pages": len(pages),
     }
-
-
-def _build_page_index(reader, pages: list[str]) -> dict[int, int]:
-    """
-    Build mapping: protocol page number (int) → 0-based PDF page index.
-
-    Priority:
-    1. PDF page labels embedded in the file (most reliable)
-    2. Scan each page for a standalone integer at top or bottom
-    3. Identity map (1-indexed, no front matter assumed)
-    """
-    # Method 1: PDF page labels
-    try:
-        labels = list(reader.page_labels)
-        mapping: dict[int, int] = {}
-        for i, label in enumerate(labels):
-            try:
-                num = int(label)
-                if num not in mapping:
-                    mapping[num] = i
-            except (ValueError, TypeError):
-                pass
-        if mapping:
-            return mapping
-    except Exception:
-        pass
-
-    # Method 2: Scan pages for standalone integers in first/last lines
-    mapping = {}
-    for i, text in enumerate(pages):
-        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-        if not lines:
-            continue
-        for candidate in lines[:3] + lines[-3:]:
-            if re.match(r"^\d+$", candidate):
-                num = int(candidate)
-                if num not in mapping:
-                    mapping[num] = i
-                break
-
-    if mapping:
-        return mapping
-
-    # Method 3: Identity (1-indexed, assume no front matter)
-    return {i + 1: i for i in range(len(pages))}
 
 
 def _parse_docx(raw: bytes, filename: str) -> dict:
