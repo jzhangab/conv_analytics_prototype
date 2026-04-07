@@ -49,7 +49,7 @@ class Orchestrator:
 
         self.session_store = session_store
         self.llm = LLMClient(config)
-        self.router = Router(self.llm)
+        self.router = Router(self.llm, config=config)
         self.schemas: dict[str, SkillSchema] = load_schemas()
         self.context_turns = config["llm_mesh"].get("context_window_turns", 10)
 

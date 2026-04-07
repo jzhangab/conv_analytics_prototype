@@ -7,6 +7,9 @@ llm_mesh:
   max_tokens: 16384
   context_window_turns: 10                   # Number of prior turns sent to LLM
 
+data_sources:
+  citeline_dataset: "CITELINE_DATA"   # Dataiku dataset name for Citeline trial data
+
 session:
   timeout_minutes: 30
 

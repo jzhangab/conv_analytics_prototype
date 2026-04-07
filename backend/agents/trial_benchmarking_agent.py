@@ -1,7 +1,9 @@
 """
 Trial Benchmarking SubAgent.
-Queries citeline_data.csv for matching historical trials, computes aggregate
-statistics, then passes the real data to the LLM for narrative interpretation.
+Loads Citeline trial data from a configurable Dataiku dataset (default: CITELINE_DATA),
+computes aggregate statistics, then passes the real data to the LLM for interpretation.
+
+Falls back to a local citeline_data.csv file when running outside Dataiku (dev/testing).
 """
 from __future__ import annotations
 
@@ -17,8 +19,10 @@ from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-# Path to the Citeline data file — relative to the project root
-_DATA_FILE = Path(__file__).parent.parent.parent / "data" / "citeline_data.csv"
+# Local CSV fallback path (used when dataiku module is not available)
+_LOCAL_CSV = Path(__file__).parent.parent.parent / "data" / "citeline_data.csv"
+
+DEFAULT_DATASET = "CITELINE_DATA"
 
 
 class TrialBenchmarkingAgent(BaseAgent):
@@ -26,8 +30,9 @@ class TrialBenchmarkingAgent(BaseAgent):
     display_name = "Clinical Trial Benchmarking"
     description = "Benchmarks clinical trials by indication, age group, and phase using Citeline data."
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_DATASET):
         self.llm = llm_client
+        self.dataset_name = dataset_name
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         indication = params["indication"]
@@ -126,22 +131,11 @@ class TrialBenchmarkingAgent(BaseAgent):
         values via LLM, then filter. Falls back progressively when no exact match.
         Returns (data_context_string, matched_rows_as_list_of_dicts).
         """
-        try:
-            import pandas as pd
-        except ImportError:
-            return "pandas not available; no database query performed.", []
-
-        if not _DATA_FILE.exists():
-            return (
-                f"Citeline data file not found at {_DATA_FILE}. "
-                "Metrics will be based on general industry knowledge.",
-                [],
-            )
-
-        try:
-            df = pd.read_csv(_DATA_FILE)
-        except Exception as e:
-            return f"Could not read Citeline data: {e}", []
+        df, load_error = self._load_citeline_df()
+        if load_error:
+            return load_error, []
+        if df is None:
+            return "Citeline data unavailable. Metrics will be based on general industry knowledge.", []
 
         # Normalise column names and values
         df.columns = [c.strip().lower() for c in df.columns]
@@ -276,6 +270,51 @@ class TrialBenchmarkingAgent(BaseAgent):
             f"  Phases in match:             {', '.join(s['phases'])}\n"
         )
         return context, matched_rows
+
+    def _load_citeline_df(self):
+        """
+        Load Citeline data as a DataFrame.
+
+        Priority:
+        1. Dataiku dataset named self.dataset_name
+        2. Local CSV fallback at _LOCAL_CSV (dev/testing only)
+
+        Returns (df, error_message). On success error_message is None.
+        """
+        import pandas as pd
+
+        # ── 1. Dataiku dataset ────────────────────────────────────────────────
+        try:
+            import dataiku
+            ds  = dataiku.Dataset(self.dataset_name)
+            df  = ds.get_dataframe()
+            self._log_trace(
+                label="Citeline Data Load",
+                summary=f"Loaded {len(df):,} rows from Dataiku dataset '{self.dataset_name}'.",
+            )
+            return df, None
+        except ImportError:
+            pass  # not running inside Dataiku — fall through to local CSV
+        except Exception as e:
+            err = f"Could not read Dataiku dataset '{self.dataset_name}': {e}"
+            logger.warning(err)
+            return None, err
+
+        # ── 2. Local CSV fallback ─────────────────────────────────────────────
+        if not _LOCAL_CSV.exists():
+            return None, (
+                f"Dataiku module not available and local CSV fallback not found "
+                f"at {_LOCAL_CSV}. Metrics will be based on general industry knowledge."
+            )
+        try:
+            df = pd.read_csv(_LOCAL_CSV)
+            self._log_trace(
+                label="Citeline Data Load",
+                summary=f"Loaded {len(df):,} rows from local CSV fallback at {_LOCAL_CSV}.",
+            )
+            return df, None
+        except Exception as e:
+            return None, f"Could not read local Citeline CSV: {e}"
 
     def _log_trace(self, label: str, summary: str) -> None:
         """Append a synthetic entry to the LLM client's call_log for the trace pane."""
