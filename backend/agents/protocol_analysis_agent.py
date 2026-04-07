@@ -21,7 +21,7 @@ from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-MAX_CHARS = 1_500_000  # conservative ceiling — targets ~500k tokens allowing for low chars/token in PDF text
+MAX_CHARS = 800_000  # hard ceiling — ~200k tokens at 4 chars/token
 SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "suggestion": 3}
 
 
