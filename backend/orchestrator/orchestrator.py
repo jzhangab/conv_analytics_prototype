@@ -425,7 +425,11 @@ class Orchestrator:
             "chart_json": chart_json,
             "result_id": result_id,
             "uploaded_files": {
-                k: {"filename": v["filename"], "rows": len(v["data"])}
+                k: {
+                    "filename": v["filename"],
+                    "rows": len(v["data"]) if "data" in v else None,
+                    "chars": v.get("char_count"),
+                }
                 for k, v in state.uploaded_files.items()
             },
         }
