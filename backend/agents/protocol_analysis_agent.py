@@ -21,7 +21,7 @@ from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-MAX_CHARS = 3_000_000  # ~750k tokens — safe ceiling for GPT-4.1
+MAX_CHARS = 4_000_000  # ~1M tokens at 4 chars/token — matches model context limit
 SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "suggestion": 3}
 
 
