@@ -5,6 +5,7 @@ from __future__ import annotations
 from backend.agents.base_agent import BaseAgent
 from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent
+from backend.agents.protocol_analysis_agent import ProtocolAnalysisAgent
 from backend.agents.site_list_merger_agent import SiteListMatchingAgent
 from backend.agents.trial_benchmarking_agent import TrialBenchmarkingAgent
 from backend.llm.llm_client import LLMClient
@@ -17,6 +18,7 @@ class Router:
             "trial_benchmarking": TrialBenchmarkingAgent(llm_client),
             "drug_reimbursement": DrugReimbursementAgent(llm_client),
             "enrollment_forecasting": EnrollmentForecastingAgent(llm_client),
+            "protocol_analysis": ProtocolAnalysisAgent(llm_client),
         }
 
     def get_agent(self, skill_id: str) -> BaseAgent | None:

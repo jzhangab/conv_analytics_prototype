@@ -122,3 +122,15 @@ skills:
         label: "Planned Enrollment Start Date"
         description: "Date of first patient in (YYYY-MM-DD). Defaults to today."
         data_type: date
+
+  protocol_analysis:
+    display_name: "Clinical Trial Protocol Analysis"
+    description: >
+      Analyses an uploaded clinical trial protocol document (PDF, DOCX, or TXT) for
+      study design improvements. Reviews endpoints, statistical approach, inclusion/exclusion
+      criteria, operational feasibility, safety monitoring, and regulatory alignment.
+    required_parameters:
+      - name: protocol_file
+        label: "Protocol Document"
+        description: "Clinical trial protocol as a PDF, DOCX, or TXT file"
+        data_type: file

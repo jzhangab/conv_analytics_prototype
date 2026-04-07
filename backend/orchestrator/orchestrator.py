@@ -17,6 +17,7 @@ import logging
 import uuid
 from datetime import datetime
 
+from backend.agents.protocol_analysis_agent import parse_protocol_file
 from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (CLARIFICATION_MESSAGE,
@@ -68,18 +69,30 @@ class Orchestrator:
     def handle_file_upload(self, session_id: str, file_key: str, file_storage) -> dict:
         state = self.session_store.get_or_create(session_id)
         try:
-            file_info = parse_uploaded_file(file_storage)
-            state.uploaded_files[file_key] = file_info
-            msg = (
-                f"Site list uploaded: **{file_info['filename']}** "
-                f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
-            )
-            state.add_message("assistant", msg)
-
-            # Auto-detect Site Matching intent if not already set
-            if state.active_skill is None or state.active_skill == "site_list_matching":
-                state.active_skill = "site_list_matching"
-                state.fsm_state = FSMState.PARAMETER_GATHERING
+            if file_key == "protocol_file":
+                file_info = parse_protocol_file(file_storage)
+                state.uploaded_files[file_key] = file_info
+                truncation_note = " *(truncated to 40,000 chars for analysis)*" if file_info.get("was_truncated") else ""
+                msg = (
+                    f"Protocol uploaded: **{file_info['filename']}** "
+                    f"({file_info['char_count']:,} characters{truncation_note}). "
+                    "Type **\"analyze\"** to run the study design review."
+                )
+                state.add_message("assistant", msg)
+                if state.active_skill is None or state.active_skill == "protocol_analysis":
+                    state.active_skill = "protocol_analysis"
+                    state.fsm_state = FSMState.PARAMETER_GATHERING
+            else:
+                file_info = parse_uploaded_file(file_storage)
+                state.uploaded_files[file_key] = file_info
+                msg = (
+                    f"Site list uploaded: **{file_info['filename']}** "
+                    f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
+                )
+                state.add_message("assistant", msg)
+                if state.active_skill is None or state.active_skill == "site_list_matching":
+                    state.active_skill = "site_list_matching"
+                    state.fsm_state = FSMState.PARAMETER_GATHERING
 
             return self._build_response(message=msg, state=state)
         except ValueError as e:
@@ -389,6 +402,7 @@ class Orchestrator:
             "2": "trial_benchmarking",
             "3": "drug_reimbursement",
             "4": "enrollment_forecasting",
+            "5": "protocol_analysis",
         }
         stripped = message.strip().rstrip(".,")
         return skill_by_number.get(stripped)

@@ -107,8 +107,8 @@ def upload():
     session_id = request.form.get("session_id") or str(uuid.uuid4())
     file_key = request.form.get("file_key", "")
 
-    if file_key not in ("site_file",):
-        return jsonify({"error": "file_key must be 'site_file'"}), 400
+    if file_key not in ("site_file", "protocol_file"):
+        return jsonify({"error": "file_key must be 'site_file' or 'protocol_file'"}), 400
 
     if file_key not in request.files or request.files[file_key].filename == "":
         return jsonify({"error": "No file provided"}), 400

@@ -15,4 +15,7 @@ upload:
     - csv
     - xlsx
     - xls
-  max_size_mb: 10
+    - pdf
+    - docx
+    - txt
+  max_size_mb: 25
