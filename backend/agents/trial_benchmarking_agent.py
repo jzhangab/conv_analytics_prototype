@@ -263,9 +263,12 @@ class TrialBenchmarkingAgent(BaseAgent):
     @staticmethod
     def _parse_list_cell(val) -> list[str]:
         """
-        Parse a cell that may contain a list stored as a string.
-        Handles: Python list, JSON array string, ast.literal_eval string,
-        plain string (returned as single-element list).
+        Parse a cell that may contain multiple values in any of these formats:
+          - Python list object
+          - JSON array string: '["NSCLC", "Lung Cancer"]'
+          - Semicolon-delimited string: 'NSCLC; Lung Cancer'
+          - Plain string (single value)
+        Always returns a list[str] with whitespace-stripped, non-empty elements.
         """
         if isinstance(val, list):
             return [str(v).strip() for v in val if str(v).strip()]
@@ -275,6 +278,7 @@ class TrialBenchmarkingAgent(BaseAgent):
         val = val.strip()
         if not val or val.lower() in ("nan", "none"):
             return []
+        # JSON / Python list literal
         if val.startswith("["):
             for parser in (json.loads, ast.literal_eval):
                 try:
@@ -283,6 +287,9 @@ class TrialBenchmarkingAgent(BaseAgent):
                         return [str(v).strip() for v in parsed if str(v).strip()]
                 except Exception:
                     pass
+        # Semicolon-delimited string (e.g. "NSCLC; Lung Cancer; SCLC")
+        if ";" in val:
+            return [part.strip() for part in val.split(";") if part.strip()]
         return [val]
 
     def _extract_unique_values(self, series) -> list[str]:
