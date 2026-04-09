@@ -81,11 +81,6 @@ CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need
 Which would you like to use? You can describe what you need or pick a number."""
 
 
-FOLLOWUP_CONFIRMATION_MESSAGE = (
-    "It looks like you're asking a follow-up question. "
-    "Would you like me to perform the analysis on the last results?"
-)
-
 
 # ---------------------------------------------------------------------------
 # Subagent: Site List Matching

@@ -22,8 +22,7 @@ from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (CLARIFICATION_MESSAGE,
                                             DATA_REASONING_SYSTEM,
-                                            DATA_REASONING_USER,
-                                            FOLLOWUP_CONFIRMATION_MESSAGE)
+                                            DATA_REASONING_USER)
 from backend.llm.web_search import WebSearchClient
 from backend.orchestrator.confirmation_manager import (build_confirmation_prompt,
                                                         parse_confirmation_reply)
@@ -157,26 +156,6 @@ class Orchestrator:
     def _route_fsm(self, state: ConversationState, user_message: str, history: list) -> dict:
         fsm = state.fsm_state
 
-        # Follow-up confirmation pending — user must say yes/no
-        if fsm == FSMState.FOLLOWUP_CONFIRMATION:
-            reply = parse_confirmation_reply(user_message)
-            if reply == "yes":
-                followup_msg = state.pending_followup_message
-                state.pending_followup_message = None
-                state.fsm_state = FSMState.IDLE
-                return self._handle_reasoning(state, followup_msg, history)
-            elif reply == "no":
-                state.pending_followup_message = None
-                state.fsm_state = FSMState.IDLE
-                msg = "No problem. What else can I help you with?"
-                return self._build_response(message=msg, state=state)
-            else:
-                # User typed something else (e.g. a new request) — reset and
-                # re-classify their message as a fresh intent
-                state.pending_followup_message = None
-                state.fsm_state = FSMState.IDLE
-                return self._route_fsm(state, user_message, history)
-
         # Confirmation pending — treat user message as confirmation reply
         if fsm == FSMState.CONFIRMATION_PENDING:
             reply = parse_confirmation_reply(user_message)
@@ -211,20 +190,20 @@ class Orchestrator:
             # Check if user is picking a skill by number
             intent = self._parse_skill_selection(user_message)
 
+        # If no skill matched but the session has prior results, treat the
+        # message as a follow-up question about those results.  This covers
+        # the common case where the user asks something like "which country
+        # looks best?" right after a reimbursement table is shown.
+        if intent is None and state.prior_results:
+            return self._handle_reasoning(state, user_message, history)
+
         if intent is None:
             state.fsm_state = FSMState.CLARIFICATION_REQUEST
             msg = CLARIFICATION_MESSAGE
             return self._build_response(message=msg, state=state)
 
-        # Data reasoning — ask user to confirm before analysing prior results
+        # Data reasoning — classifier explicitly matched the intent
         if intent == "data_reasoning":
-            if state.prior_results:
-                state.pending_followup_message = user_message
-                state.fsm_state = FSMState.FOLLOWUP_CONFIRMATION
-                return self._build_response(
-                    message=FOLLOWUP_CONFIRMATION_MESSAGE, state=state
-                )
-            # No prior results — fall through to handle_reasoning which shows a helpful message
             return self._handle_reasoning(state, user_message, history)
 
         # Intent recognized — set active skill and extract params
