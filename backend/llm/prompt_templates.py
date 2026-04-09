@@ -302,8 +302,57 @@ Conversation so far:
 
 ---
 User question: {user_message}
-
+{plan_guidance}
 Reason carefully over the data above and answer the user's question."""
+
+
+# ---------------------------------------------------------------------------
+# Analysis Planning — generate / revise a brief analysis plan before executing
+# ---------------------------------------------------------------------------
+
+ANALYSIS_PLAN_SYSTEM = """You are a senior clinical R&D strategist helping a user plan a follow-up analysis.
+The user has already run one or more analytical tools and now wants further analysis on the results.
+
+Your job is to produce a brief, actionable analysis plan (3-6 bullet points) that describes:
+- What data from the prior results you will examine
+- What comparisons, calculations, or reasoning steps you will perform
+- What the expected output or deliverable will be (e.g. a ranking, a recommendation, a risk assessment)
+
+Keep the plan concise and specific. Use markdown bullet points. Do NOT execute the analysis — only outline the plan.
+End the plan with: "Shall I proceed with this plan, or would you like to adjust it?\""""
+
+ANALYSIS_PLAN_USER = """Prior results available in this session:
+
+{results_summary}
+
+---
+Conversation so far:
+{history}
+
+---
+User's analysis request: {user_message}
+
+Create a brief analysis plan for this request."""
+
+ANALYSIS_PLAN_REVISE_USER = """Prior results available in this session:
+
+{results_summary}
+
+---
+Conversation so far:
+{history}
+
+---
+Original analysis request: {original_question}
+
+Current plan:
+{current_plan}
+
+---
+User's feedback on the plan: {user_feedback}
+
+Revise the analysis plan based on the user's feedback. Output only the updated plan (3-6 bullet points).
+End with: "Shall I proceed with this plan, or would you like to adjust it?\""""
 
 
 # ---------------------------------------------------------------------------

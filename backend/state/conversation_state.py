@@ -18,6 +18,7 @@ class FSMState(str, Enum):
     CONFIRMATION_PENDING = "confirmation_pending"
     SKILL_EXECUTION = "skill_execution"
     RESULT_PRESENTATION = "result_presentation"
+    ANALYSIS_PLANNING = "analysis_planning"
 
 
 @dataclass
@@ -69,6 +70,10 @@ class ConversationState:
 
         # Completed skill results available for export
         self.prior_results: list[SkillResult] = []
+
+        # Analysis planning state — holds the plan while user confirms/revises
+        self.analysis_plan: Optional[str] = None
+        self.analysis_question: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Message history helpers

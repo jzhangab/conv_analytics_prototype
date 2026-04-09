@@ -20,7 +20,10 @@ from datetime import datetime
 from backend.agents.protocol_analysis_agent import parse_protocol_file
 from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
-from backend.llm.prompt_templates import (CLARIFICATION_MESSAGE,
+from backend.llm.prompt_templates import (ANALYSIS_PLAN_REVISE_USER,
+                                            ANALYSIS_PLAN_SYSTEM,
+                                            ANALYSIS_PLAN_USER,
+                                            CLARIFICATION_MESSAGE,
                                             DATA_REASONING_SYSTEM,
                                             DATA_REASONING_USER)
 from backend.llm.web_search import WebSearchClient
@@ -156,6 +159,27 @@ class Orchestrator:
     def _route_fsm(self, state: ConversationState, user_message: str, history: list) -> dict:
         fsm = state.fsm_state
 
+        # Analysis planning — user is confirming or revising the plan
+        if fsm == FSMState.ANALYSIS_PLANNING:
+            reply = parse_confirmation_reply(user_message)
+            if reply == "yes":
+                # Execute the analysis using the confirmed plan
+                plan = state.analysis_plan
+                question = state.analysis_question
+                state.analysis_plan = None
+                state.analysis_question = None
+                state.fsm_state = FSMState.IDLE
+                return self._handle_reasoning(state, question, history, plan=plan)
+            elif reply == "no":
+                state.analysis_plan = None
+                state.analysis_question = None
+                state.fsm_state = FSMState.IDLE
+                msg = "No problem — plan cancelled. What else can I help you with?"
+                return self._build_response(message=msg, state=state)
+            else:
+                # User is providing feedback to revise the plan
+                return self._revise_plan(state, user_message, history)
+
         # Confirmation pending — treat user message as confirmation reply
         if fsm == FSMState.CONFIRMATION_PENDING:
             reply = parse_confirmation_reply(user_message)
@@ -191,11 +215,10 @@ class Orchestrator:
             intent = self._parse_skill_selection(user_message)
 
         # If no skill matched but the session has prior results, treat the
-        # message as a follow-up question about those results.  This covers
-        # the common case where the user asks something like "which country
-        # looks best?" right after a reimbursement table is shown.
+        # message as a follow-up question about those results.  Generate an
+        # analysis plan for the user to confirm before executing.
         if intent is None and state.prior_results:
-            return self._handle_reasoning(state, user_message, history)
+            return self._generate_plan(state, user_message, history)
 
         if intent is None:
             state.fsm_state = FSMState.CLARIFICATION_REQUEST
@@ -204,6 +227,8 @@ class Orchestrator:
 
         # Data reasoning — classifier explicitly matched the intent
         if intent == "data_reasoning":
+            if state.prior_results:
+                return self._generate_plan(state, user_message, history)
             return self._handle_reasoning(state, user_message, history)
 
         # Intent recognized — set active skill and extract params
@@ -323,10 +348,107 @@ class Orchestrator:
         )
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Analysis planning
     # ------------------------------------------------------------------
 
-    def _handle_reasoning(self, state: ConversationState, user_message: str, history: list) -> dict:
+    def _generate_plan(self, state: ConversationState, user_message: str, history: list) -> dict:
+        """Generate a brief analysis plan and ask the user to confirm."""
+        results_summary = self._format_results_summary(state)
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
+        ) or "(no prior turns)"
+
+        messages = [
+            {"role": "system", "content": ANALYSIS_PLAN_SYSTEM},
+            {"role": "user", "content": ANALYSIS_PLAN_USER.format(
+                results_summary=results_summary,
+                history=history_text,
+                user_message=user_message,
+            )},
+        ]
+
+        try:
+            plan = self.llm.complete(messages, temperature=self.llm.temp_agents)
+        except Exception as e:
+            logger.error("Analysis plan generation failed: %s", e)
+            return self._build_error(f"Could not generate analysis plan: {e}")
+
+        if self.llm.call_log:
+            self.llm.call_log[-1]["label"] = "Analysis Plan Generation"
+
+        state.analysis_plan = plan
+        state.analysis_question = user_message
+        state.fsm_state = FSMState.ANALYSIS_PLANNING
+
+        return self._build_response(message=plan, state=state)
+
+    def _revise_plan(self, state: ConversationState, user_feedback: str, history: list) -> dict:
+        """Revise the current analysis plan based on user feedback."""
+        results_summary = self._format_results_summary(state)
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
+        ) or "(no prior turns)"
+
+        messages = [
+            {"role": "system", "content": ANALYSIS_PLAN_SYSTEM},
+            {"role": "user", "content": ANALYSIS_PLAN_REVISE_USER.format(
+                results_summary=results_summary,
+                history=history_text,
+                original_question=state.analysis_question,
+                current_plan=state.analysis_plan,
+                user_feedback=user_feedback,
+            )},
+        ]
+
+        try:
+            revised_plan = self.llm.complete(messages, temperature=self.llm.temp_agents)
+        except Exception as e:
+            logger.error("Analysis plan revision failed: %s", e)
+            return self._build_error(f"Could not revise analysis plan: {e}")
+
+        if self.llm.call_log:
+            self.llm.call_log[-1]["label"] = "Analysis Plan Revision"
+
+        state.analysis_plan = revised_plan
+        # Stay in ANALYSIS_PLANNING — user can revise again or confirm
+
+        return self._build_response(message=revised_plan, state=state)
+
+    def _format_results_summary(self, state: ConversationState) -> str:
+        """Short summary of available results for use in planning prompts."""
+        SKILL_LABELS = {
+            "site_list_matching": "Site List Matching",
+            "site_list_merger":   "Site List Matching",
+            "trial_benchmarking": "Trial Benchmarking",
+            "drug_reimbursement": "Drug Reimbursement Assessment",
+            "enrollment_forecasting": "Enrollment Forecasting",
+            "protocol_analysis": "Protocol Analysis",
+        }
+        lines = []
+        for i, result in enumerate(state.prior_results, 1):
+            label = SKILL_LABELS.get(result.skill_id, result.skill_id)
+            params_str = ", ".join(
+                f"{k}={v}" for k, v in result.parameters_used.items() if v is not None
+            )
+            has_table = "yes" if result.table_data else "no"
+            has_chart = "yes" if result.chart_json else "no"
+            lines.append(
+                f"{i}. **{label}** — params: {params_str}; "
+                f"table: {has_table}; chart: {has_chart}"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Data reasoning execution
+    # ------------------------------------------------------------------
+
+    def _handle_reasoning(
+        self,
+        state: ConversationState,
+        user_message: str,
+        history: list,
+        plan: str = None,
+    ) -> dict:
         """Answer a follow-up analytical question grounded in all prior skill results."""
         if not state.prior_results:
             msg = (
@@ -348,6 +470,12 @@ class Orchestrator:
             if web_context else ""
         )
 
+        # Include the confirmed analysis plan as guidance
+        plan_guidance = (
+            f"\nApproved analysis plan (follow this structure):\n{plan}\n"
+            if plan else ""
+        )
+
         messages = [
             {"role": "system", "content": DATA_REASONING_SYSTEM},
             {"role": "user", "content": DATA_REASONING_USER.format(
@@ -355,6 +483,7 @@ class Orchestrator:
                 web_context=web_block,
                 history=history_text,
                 user_message=user_message,
+                plan_guidance=plan_guidance,
             )},
         ]
 
