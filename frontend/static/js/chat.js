@@ -43,12 +43,21 @@
 
   confirmYes.addEventListener('click', function () {
     hideConfirmBar();
-    sendConfirmation(true);
+    if (fsmState === 'followup_confirmation') {
+      // Send "yes" as a chat message — the orchestrator handles it in _route_fsm
+      sendChatText('yes');
+    } else {
+      sendConfirmation(true);
+    }
   });
 
   confirmNo.addEventListener('click', function () {
     hideConfirmBar();
-    sendConfirmation(false);
+    if (fsmState === 'followup_confirmation') {
+      sendChatText('no');
+    } else {
+      sendConfirmation(false);
+    }
   });
 
   newSessionBtn.addEventListener('click', function () {
@@ -71,9 +80,12 @@
     const text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = '';
+    sendChatText(text);
+  }
+
+  function sendChatText(text) {
     appendUserMessage(text);
     setLoading(true);
-
     fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -122,8 +134,8 @@
       });
     }
 
-    // Show confirmation bar if pending
-    if (fsmState === 'confirmation_pending') {
+    // Show confirmation bar if pending (skill confirmation or follow-up confirmation)
+    if (fsmState === 'confirmation_pending' || fsmState === 'followup_confirmation') {
       showConfirmBar();
     } else {
       hideConfirmBar();

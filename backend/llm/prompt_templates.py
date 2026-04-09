@@ -81,6 +81,12 @@ CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need
 Which would you like to use? You can describe what you need or pick a number."""
 
 
+FOLLOWUP_CONFIRMATION_MESSAGE = (
+    "It looks like you're asking a follow-up question. "
+    "Would you like me to perform the analysis on the last results?"
+)
+
+
 # ---------------------------------------------------------------------------
 # Subagent: Site List Matching
 # ---------------------------------------------------------------------------
@@ -159,7 +165,7 @@ Trial Phase: {phase}
 
 Citeline Database Query Results:
 {data_context}
-
+{web_context}
 Interpret these results and return the benchmark JSON."""
 
 
@@ -202,7 +208,7 @@ DRUG_REIMBURSEMENT_USER = """Indication: {indication}
 Age Group: {age_group}
 Trial Phase: {phase}
 Countries to assess: {countries}
-
+{web_context}
 Assess the drug reimbursement landscape for this drug profile."""
 
 
@@ -247,7 +253,7 @@ Age Group: {age_group}
 Trial Phase: {phase}
 Number of Sites: {num_sites}
 Target Patients: {num_patients}
-
+{web_context}
 Estimate enrollment modeling parameters for three scenarios."""
 
 
@@ -287,13 +293,14 @@ Guidelines:
 - Be concrete: give actionable recommendations, not vague generalities.
 - Flag uncertainty clearly when the data does not fully support a conclusion.
 - Structure long answers with markdown headers and bullet points for readability.
+- If web search results are provided, use them as supplementary context to enrich your answer. Cite the source when referencing web information.
 - If the question cannot be answered from the provided data alone, say so and explain what additional information would help.
 - Do not re-run or invent skill outputs — work only with what is given."""
 
 DATA_REASONING_USER = """The following results were generated earlier in this session:
 
 {results_context}
-
+{web_context}
 ---
 Conversation so far:
 {history}

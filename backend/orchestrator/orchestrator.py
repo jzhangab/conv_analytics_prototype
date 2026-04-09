@@ -22,7 +22,9 @@ from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (CLARIFICATION_MESSAGE,
                                             DATA_REASONING_SYSTEM,
-                                            DATA_REASONING_USER)
+                                            DATA_REASONING_USER,
+                                            FOLLOWUP_CONFIRMATION_MESSAGE)
+from backend.llm.web_search import WebSearchClient
 from backend.orchestrator.confirmation_manager import (build_confirmation_prompt,
                                                         parse_confirmation_reply)
 from backend.orchestrator.intent_classifier import classify_intent
@@ -49,7 +51,8 @@ class Orchestrator:
 
         self.session_store = session_store
         self.llm = LLMClient(config)
-        self.router = Router(self.llm, config=config)
+        self.web_search = WebSearchClient(config)
+        self.router = Router(self.llm, config=config, web_search=self.web_search)
         self.schemas: dict[str, SkillSchema] = load_schemas()
         self.context_turns = config["llm_mesh"].get("context_window_turns", 10)
 
@@ -154,6 +157,26 @@ class Orchestrator:
     def _route_fsm(self, state: ConversationState, user_message: str, history: list) -> dict:
         fsm = state.fsm_state
 
+        # Follow-up confirmation pending — user must say yes/no
+        if fsm == FSMState.FOLLOWUP_CONFIRMATION:
+            reply = parse_confirmation_reply(user_message)
+            if reply == "yes":
+                followup_msg = state.pending_followup_message
+                state.pending_followup_message = None
+                state.fsm_state = FSMState.IDLE
+                return self._handle_reasoning(state, followup_msg, history)
+            elif reply == "no":
+                state.pending_followup_message = None
+                state.fsm_state = FSMState.IDLE
+                msg = "No problem. What else can I help you with?"
+                return self._build_response(message=msg, state=state)
+            else:
+                # User typed something else (e.g. a new request) — reset and
+                # re-classify their message as a fresh intent
+                state.pending_followup_message = None
+                state.fsm_state = FSMState.IDLE
+                return self._route_fsm(state, user_message, history)
+
         # Confirmation pending — treat user message as confirmation reply
         if fsm == FSMState.CONFIRMATION_PENDING:
             reply = parse_confirmation_reply(user_message)
@@ -193,8 +216,15 @@ class Orchestrator:
             msg = CLARIFICATION_MESSAGE
             return self._build_response(message=msg, state=state)
 
-        # Data reasoning — answer follow-up questions about prior results
+        # Data reasoning — ask user to confirm before analysing prior results
         if intent == "data_reasoning":
+            if state.prior_results:
+                state.pending_followup_message = user_message
+                state.fsm_state = FSMState.FOLLOWUP_CONFIRMATION
+                return self._build_response(
+                    message=FOLLOWUP_CONFIRMATION_MESSAGE, state=state
+                )
+            # No prior results — fall through to handle_reasoning which shows a helpful message
             return self._handle_reasoning(state, user_message, history)
 
         # Intent recognized — set active skill and extract params
@@ -332,10 +362,18 @@ class Orchestrator:
             f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
         ) or "(no prior turns)"
 
+        # Web search for supplementary context
+        web_context = self.web_search.search(user_message)
+        web_block = (
+            f"\n---\nSupplementary web search results:\n{web_context}\n"
+            if web_context else ""
+        )
+
         messages = [
             {"role": "system", "content": DATA_REASONING_SYSTEM},
             {"role": "user", "content": DATA_REASONING_USER.format(
                 results_context=results_context,
+                web_context=web_block,
                 history=history_text,
                 user_message=user_message,
             )},

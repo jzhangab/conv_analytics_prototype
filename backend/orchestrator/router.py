@@ -9,19 +9,22 @@ from backend.agents.protocol_analysis_agent import ProtocolAnalysisAgent
 from backend.agents.site_list_merger_agent import SiteListMatchingAgent
 from backend.agents.trial_benchmarking_agent import TrialBenchmarkingAgent, DEFAULT_DATASET
 from backend.llm.llm_client import LLMClient
+from backend.llm.web_search import WebSearchClient
 
 
 class Router:
-    def __init__(self, llm_client: LLMClient, config: dict = None):
+    def __init__(self, llm_client: LLMClient, config: dict = None,
+                 web_search: WebSearchClient | None = None):
         citeline_dataset = (
             (config or {}).get("data_sources", {}).get("citeline_dataset", DEFAULT_DATASET)
         )
         self._registry: dict[str, BaseAgent] = {
             "site_list_matching":   SiteListMatchingAgent(llm_client),
-            "trial_benchmarking":   TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset),
-            "drug_reimbursement":   DrugReimbursementAgent(llm_client),
-            "enrollment_forecasting": EnrollmentForecastingAgent(llm_client),
-            "protocol_analysis":    ProtocolAnalysisAgent(llm_client),
+            "trial_benchmarking":   TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset,
+                                                           web_search=web_search),
+            "drug_reimbursement":   DrugReimbursementAgent(llm_client, web_search=web_search),
+            "enrollment_forecasting": EnrollmentForecastingAgent(llm_client, web_search=web_search),
+            "protocol_analysis":    ProtocolAnalysisAgent(llm_client, web_search=web_search),
         }
 
     def get_agent(self, skill_id: str) -> BaseAgent | None:

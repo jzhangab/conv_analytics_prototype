@@ -5,6 +5,8 @@ Produces pessimistic / moderate / optimistic curves using a two-stage approach:
   2. Deterministic Python math computes the curves (auditable, reproducible).
   3. LLM narrates the results.
 """
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 
@@ -15,6 +17,7 @@ from backend.llm.prompt_templates import (ENROLLMENT_NARRATIVE_SYSTEM,
                                            ENROLLMENT_PARAMS_SYSTEM,
                                            ENROLLMENT_PARAMS_USER)
 from backend.llm.response_parser import parse_enrollment_params
+from backend.llm.web_search import WebSearchClient
 from backend.state.conversation_state import ConversationState
 from backend.utils.chart_builder import build_enrollment_figure, compute_scenario
 from backend.utils.formatters import dict_list_to_table
@@ -30,8 +33,9 @@ class EnrollmentForecastingAgent(BaseAgent):
     display_name = "Enrollment & Site Activation Forecasting"
     description = "Forecasts enrollment and site activation curves across three scenarios."
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, web_search: WebSearchClient | None = None):
         self.llm = llm_client
+        self.web_search = web_search
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         indication = params["indication"]
@@ -48,6 +52,13 @@ class EnrollmentForecastingAgent(BaseAgent):
         else:
             start_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
+        # Web search for supplementary enrollment benchmarks
+        web_context = ""
+        if self.web_search:
+            raw = self.web_search.search_for_skill("enrollment_forecasting", params)
+            if raw:
+                web_context = f"\nSupplementary web search results:\n{raw}\n"
+
         # Stage 1: LLM estimates parameters for all three scenarios
         param_messages = [
             {"role": "system", "content": ENROLLMENT_PARAMS_SYSTEM},
@@ -57,6 +68,7 @@ class EnrollmentForecastingAgent(BaseAgent):
                 phase=phase,
                 num_sites=num_sites,
                 num_patients=num_patients,
+                web_context=web_context,
             )},
         ]
 

@@ -21,6 +21,7 @@ from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (TRIAL_BENCHMARKING_SYSTEM,
                                            TRIAL_BENCHMARKING_USER)
 from backend.llm.response_parser import parse_benchmarking_response
+from backend.llm.web_search import WebSearchClient
 from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,11 @@ class TrialBenchmarkingAgent(BaseAgent):
     display_name = "Clinical Trial Benchmarking"
     description  = "Benchmarks clinical trials by indication, age group, and phase using Citeline data."
 
-    def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_DATASET):
+    def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_DATASET,
+                 web_search: WebSearchClient | None = None):
         self.llm          = llm_client
         self.dataset_name = dataset_name
+        self.web_search   = web_search
         self._col_map: dict[str, str] | None = None   # cached after first load
 
     # ------------------------------------------------------------------
@@ -79,6 +82,13 @@ class TrialBenchmarkingAgent(BaseAgent):
 
         data_context, matched_rows, col_map = self._query_citeline(indication, age_group, phase)
 
+        # Web search for supplementary benchmarking context
+        web_context = ""
+        if self.web_search:
+            raw = self.web_search.search_for_skill("trial_benchmarking", params)
+            if raw:
+                web_context = f"\nSupplementary web search results:\n{raw}\n"
+
         messages = [
             {"role": "system", "content": TRIAL_BENCHMARKING_SYSTEM},
             {"role": "user",   "content": TRIAL_BENCHMARKING_USER.format(
@@ -86,6 +96,7 @@ class TrialBenchmarkingAgent(BaseAgent):
                 age_group=age_group,
                 phase=phase,
                 data_context=data_context,
+                web_context=web_context,
             )},
         ]
         try:

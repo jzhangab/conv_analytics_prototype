@@ -17,6 +17,7 @@ from backend.llm.prompt_templates import (
     PROTOCOL_ANALYSIS_SYSTEM,
     PROTOCOL_ANALYSIS_USER,
 )
+from backend.llm.web_search import WebSearchClient
 from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,9 @@ class ProtocolAnalysisAgent(BaseAgent):
     display_name = "Clinical Trial Protocol Analysis"
     description  = "Analyses an uploaded protocol document for study design improvements."
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, web_search: WebSearchClient | None = None):
         self.llm = llm_client
+        self.web_search = web_search
 
     # ------------------------------------------------------------------
     # Trace helper
@@ -106,13 +108,26 @@ class ProtocolAnalysisAgent(BaseAgent):
                 "Sending complete text for analysis."
             )
 
+        # Web search for relevant regulatory guidance
+        web_context = ""
+        if self.web_search:
+            # Try to extract an indication-like term from the protocol text for a targeted search
+            search_hint = filename.replace("_", " ").rsplit(".", 1)[0]
+            raw = self.web_search.search_for_skill(
+                "protocol_analysis",
+                {"indication": search_hint},
+            )
+            if raw:
+                web_context = f"\n\nSupplementary web search results (regulatory guidance):\n{raw}"
+                self._trace("Web search context added to analysis prompt.")
+
         # Single analysis call
         self._trace("Running protocol design analysis...")
         messages = [
             {"role": "system", "content": PROTOCOL_ANALYSIS_SYSTEM},
             {"role": "user",   "content": PROTOCOL_ANALYSIS_USER.format(
                 filename=filename,
-                protocol_text=full_text,
+                protocol_text=full_text + web_context,
             )},
         ]
         try:

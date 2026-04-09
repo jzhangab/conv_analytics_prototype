@@ -22,3 +22,9 @@ upload:
     - docx
     - txt
   max_size_mb: 25
+
+serp_api:
+  api_key: "YOUR_SERPAPI_KEY"           # Replace with your SerpApi key (https://serpapi.com)
+  enabled: false                         # Set to true to enable web search in skills
+  max_results: 5                         # Number of search results per query
+  engine: "google"                       # SerpApi engine (google, bing, etc.)

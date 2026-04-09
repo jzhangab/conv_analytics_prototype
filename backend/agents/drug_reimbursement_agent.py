@@ -3,6 +3,8 @@ Drug Reimbursement Assessment SubAgent.
 Assesses reimbursement likelihood and HTA requirements by country.
 Countries are always provided by the user — no defaults.
 """
+from __future__ import annotations
+
 import logging
 
 from backend.agents.base_agent import AgentResult, BaseAgent
@@ -10,6 +12,7 @@ from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (DRUG_REIMBURSEMENT_SYSTEM,
                                            DRUG_REIMBURSEMENT_USER)
 from backend.llm.response_parser import parse_reimbursement_response
+from backend.llm.web_search import WebSearchClient
 from backend.state.conversation_state import ConversationState
 from backend.utils.formatters import format_reimbursement_table
 
@@ -21,8 +24,9 @@ class DrugReimbursementAgent(BaseAgent):
     display_name = "Drug Reimbursement Assessment"
     description = "Assesses drug reimbursement outlook by country for a given indication and phase."
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, web_search: WebSearchClient | None = None):
         self.llm = llm_client
+        self.web_search = web_search
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         indication = params["indication"]
@@ -39,6 +43,16 @@ class DrugReimbursementAgent(BaseAgent):
 
         countries_str = ", ".join(countries) if isinstance(countries, list) else str(countries)
 
+        # Web search for latest reimbursement / HTA context
+        web_context = ""
+        if self.web_search:
+            raw = self.web_search.search_for_skill(
+                "drug_reimbursement", params,
+                extra_terms=countries_str,
+            )
+            if raw:
+                web_context = f"\nSupplementary web search results:\n{raw}\n"
+
         messages = [
             {"role": "system", "content": DRUG_REIMBURSEMENT_SYSTEM},
             {"role": "user", "content": DRUG_REIMBURSEMENT_USER.format(
@@ -46,6 +60,7 @@ class DrugReimbursementAgent(BaseAgent):
                 age_group=age_group,
                 phase=phase,
                 countries=countries_str,
+                web_context=web_context,
             )},
         ]
 
