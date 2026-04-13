@@ -235,27 +235,36 @@ Return ONLY the JSON object, no markdown fences, no other text."""
 # 4. General-knowledge fallback prompts
 # =========================================================================
 
-GENERAL_KNOWLEDGE_SYSTEM = """\
-You are a knowledgeable clinical R&D assistant embedded in an analytics chatbot.
+GENERAL_KNOWLEDGE_PLAN_SYSTEM = """\
+You are a knowledgeable clinical R&D assistant with access to real-time web search.
 The user asked a question that does not match any of the chatbot's built-in analytical skills.
-You have access to real-time web search — search results are included below when available. Use them together with your own knowledge to give the best possible answer.
+Your job is to answer it using web search results and your own knowledge.
 
-Guidelines:
-- Be concise and informative. Use markdown formatting for readability.
-- You have web search capability. When web search results are included, incorporate and cite them to support your answer.
-- Combine web search data with your own clinical R&D knowledge to provide a comprehensive response.
-- If you are not confident in the answer, say so clearly.
-- Do NOT pretend you ran an analytical tool or generated data — you are answering from general knowledge and web search only.
-- At the end of your answer, briefly remind the user what analytical skills are available if their question could benefit from one."""
+You operate in a reasoning loop. On each turn you MUST return a JSON object with one of two actions:
 
-GENERAL_KNOWLEDGE_USER = """\
+1. Request a web search (you can do this up to {max_searches} times):
+   {{"action": "search", "query": "<specific search query>"}}
+
+2. Provide your final answer (do this once you have enough information):
+   {{"action": "answer", "answer": "<your full markdown-formatted answer>"}}
+
+Strategy:
+- Start by analyzing what information you need to answer the user's question.
+- Issue targeted, specific search queries — not the raw user question. For example, if asked "what are the latest FDA guidelines on adaptive trial designs", search for exactly that.
+- After each search, you will receive the results. Decide whether you need more data or can answer.
+- When you have sufficient information, use the "answer" action. Cite sources when possible.
+- Be concise and informative in your final answer. Use markdown formatting.
+- Do NOT ask the user to perform searches or provide data — you perform the searches yourself.
+- Do NOT output anything other than the JSON object.
+- If web search is unavailable or returns nothing useful, answer from your own knowledge and note the limitation."""
+
+GENERAL_KNOWLEDGE_PLAN_USER = """\
 Conversation history:
 {history}
-{web_context}
----
-User question: {user_message}
 
-Answer the question using your general knowledge and any web search context above."""
+User question: {user_message}
+{search_results}
+Decide your next action: search for more information, or provide your final answer."""
 
 SKILLS_REMINDER = """
 
@@ -268,39 +277,80 @@ SKILLS_REMINDER = """
 5. *Protocol Analysis*
 6. *Country Ranking by Trial Experience*"""
 
+MAX_SEARCH_ITERATIONS = 3
+
 
 def _handle_general_question(self, state, user_message, history):
-    """Answer a general question using web search + LLM knowledge."""
+    """Answer a general question using a web-search reasoning loop."""
+    import json as _json
+
     state.fsm_state = FSMState.IDLE
 
     history_text = "\n".join(
         f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
     ) or "(no prior turns)"
 
-    web_context = self.web_search.search(user_message)
-    web_block = (
-        f"\n---\nWeb search results:\n{web_context}\n"
-        if web_context else ""
-    )
+    # Accumulate search results across iterations
+    all_search_results = []
+    answer = None
 
-    messages = [
-        {"role": "system", "content": GENERAL_KNOWLEDGE_SYSTEM},
-        {"role": "user", "content": GENERAL_KNOWLEDGE_USER.format(
-            history=history_text,
-            web_context=web_block,
-            user_message=user_message,
-        )},
-    ]
+    for iteration in range(MAX_SEARCH_ITERATIONS + 1):
+        # Build the search results block from all gathered data so far
+        if all_search_results:
+            results_block = "\n\nWeb search results gathered so far:\n"
+            for i, (query, result) in enumerate(all_search_results, 1):
+                results_block += f"\n--- Search {i}: \"{query}\" ---\n{result}\n"
+        else:
+            results_block = ""
 
-    try:
-        answer = self.llm.complete(messages, temperature=self.llm.temp_agents)
-    except Exception as e:
-        logger.error("General knowledge LLM call failed: %s", e)
-        from backend.llm.prompt_templates import CLARIFICATION_MESSAGE
-        return self._build_response(message=CLARIFICATION_MESSAGE, state=state)
+        messages = [
+            {"role": "system", "content": GENERAL_KNOWLEDGE_PLAN_SYSTEM.format(
+                max_searches=MAX_SEARCH_ITERATIONS,
+            )},
+            {"role": "user", "content": GENERAL_KNOWLEDGE_PLAN_USER.format(
+                history=history_text,
+                user_message=user_message,
+                search_results=results_block,
+            )},
+        ]
 
-    if self.llm.call_log:
-        self.llm.call_log[-1]["label"] = "General Knowledge"
+        try:
+            raw = self.llm.complete(messages, temperature=self.llm.temp_agents)
+        except Exception as e:
+            logger.error("General knowledge reasoning loop failed: %s", e)
+            from backend.llm.prompt_templates import CLARIFICATION_MESSAGE
+            return self._build_response(message=CLARIFICATION_MESSAGE, state=state)
+
+        # Tag in trace log
+        if self.llm.call_log:
+            self.llm.call_log[-1]["label"] = f"General Knowledge (step {iteration + 1})"
+
+        # Parse the JSON action
+        try:
+            data = self.llm._parse_json(raw)
+        except (ValueError, Exception):
+            # If the LLM returned plain text instead of JSON, treat it as the answer
+            answer = raw.strip()
+            break
+
+        action = data.get("action", "answer")
+
+        if action == "search" and iteration < MAX_SEARCH_ITERATIONS:
+            query = data.get("query", user_message)
+            result = self.web_search.search(query)
+            if result:
+                all_search_results.append((query, result))
+            else:
+                all_search_results.append((query, "(No results returned)"))
+            continue
+
+        # action == "answer" or we've exhausted search iterations
+        answer = data.get("answer", raw.strip())
+        break
+
+    # If we never got an answer (shouldn't happen, but safety net)
+    if answer is None:
+        answer = "I wasn't able to find enough information to answer your question."
 
     answer = answer.strip() + SKILLS_REMINDER
     return self._build_response(message=answer, state=state)
@@ -333,7 +383,9 @@ def _patched_route_fsm(self, state, user_message, history):
     if intent == "data_reasoning":
         if state.prior_results:
             return self._generate_plan(state, user_message, history)
-        return self._handle_reasoning(state, user_message, history)
+        # No prior results — use the general-knowledge reasoning loop
+        # instead of bouncing back with "run a tool first"
+        return self._handle_general_question(state, user_message, history)
 
     state.active_skill = intent
     state.fsm_state = FSMState.PARAMETER_GATHERING
