@@ -20,6 +20,7 @@ VALID_INTENTS = {
     "enrollment_forecasting",
     "data_reasoning",
     "protocol_analysis",
+    "country_ranking",
 }
 
 CONFIDENCE_THRESHOLD = 0.70

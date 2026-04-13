@@ -123,6 +123,43 @@ skills:
         description: "Date of first patient in (YYYY-MM-DD). Defaults to today."
         data_type: date
 
+  country_ranking:
+    display_name: "Country Ranking by Trial Experience"
+    description: >
+      Ranks countries globally by their experience in executing clinical trials
+      for a given indication. Uses web search to gather data on trial activity,
+      regulatory infrastructure, and investigator density per country.
+    required_parameters:
+      - name: indication
+        label: "Indication"
+        description: "Therapeutic area or specific disease (e.g., NSCLC, Type 2 Diabetes)"
+        data_type: string
+    optional_parameters:
+      - name: age_group
+        label: "Age Group"
+        description: "Target patient population age bracket"
+        data_type: choice
+        choices:
+          - pediatric
+          - adult
+          - elderly
+          - all-comers
+        aliases:
+          pediatric: ["children", "child", "kids", "paediatric", "<18", "under 18"]
+          adult: ["adults", "adult patients", "18+", "18-65"]
+          elderly: ["elderly", "geriatric", "seniors", ">65", "over 65"]
+          all-comers: ["all ages", "all comers", "any age", "mixed"]
+      - name: phase
+        label: "Trial Phase"
+        description: "Clinical trial phase"
+        data_type: choice
+        choices:
+          - "Phase 1"
+          - "Phase 2"
+          - "Phase 3"
+          - "Phase 1/2"
+          - "Phase 2/3"
+
   protocol_analysis:
     display_name: "Clinical Trial Protocol Analysis"
     description: >

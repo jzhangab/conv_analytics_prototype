@@ -265,7 +265,8 @@ SKILLS_REMINDER = """
 2. *Trial Benchmarking*
 3. *Drug Reimbursement Assessment*
 4. *Enrollment & Site Activation Forecasting*
-5. *Protocol Analysis*"""
+5. *Protocol Analysis*
+6. *Country Ranking by Trial Experience*"""
 
 
 def _handle_general_question(self, state, user_message, history):

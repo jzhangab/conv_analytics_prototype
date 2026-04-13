@@ -553,6 +553,7 @@ class Orchestrator:
             "3": "drug_reimbursement",
             "4": "enrollment_forecasting",
             "5": "protocol_analysis",
+            "6": "country_ranking",
         }
         stripped = message.strip().rstrip(".,")
         return skill_by_number.get(stripped)

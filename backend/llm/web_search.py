@@ -140,6 +140,10 @@ class WebSearchClient:
                 f"clinical trial protocol design guidance {indication} "
                 f"{phase} FDA EMA ICH"
             ),
+            "country_ranking": (
+                f"clinical trial country ranking {indication} {phase} "
+                f"{age_group} number of trials by country site selection"
+            ),
         }
 
         query = queries.get(skill_id, "")
