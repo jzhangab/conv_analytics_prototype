@@ -194,8 +194,18 @@ def _make_response_renderer(orchestrator, session_id, chat, maybe_show_export):
             def _confirm(event):
                 yes_btn.disabled = True
                 no_btn.disabled = True
+                # Show a thinking indicator while the skill executes
+                thinking = pn.pane.Markdown(
+                    "\u23f3 *Running analysis, please wait\u2026*",
+                    sizing_mode="stretch_width",
+                    styles={"color": "#666", "font-style": "italic"},
+                )
+                chat.send(thinking, user="Assistant", respond=False)
                 r = orchestrator.handle_confirmation(session_id, confirmed=True)
-                chat.send(_response_to_panel(r), user="Assistant", respond=False)
+                # Replace the thinking indicator with the real response
+                chat.objects[-1] = pn.chat.ChatMessage(
+                    _response_to_panel(r), user="Assistant",
+                )
                 maybe_show_export(r)
 
             def _cancel(event):
