@@ -7,6 +7,7 @@ target_subjected horizontal reference line.
 from __future__ import annotations
 
 import logging
+from difflib import get_close_matches
 from pathlib import Path
 
 from backend.agents.base_agent import AgentResult, BaseAgent
@@ -61,6 +62,38 @@ class ReforecastingAgent(BaseAgent):
             return df, None
         except Exception as e:
             return None, f"Could not read local reforecast CSV: {e}"
+
+    # ------------------------------------------------------------------
+    # Fuzzy column resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_columns(df, canonical_names: list[str], cutoff: float = 0.6):
+        """Match expected canonical column names to actual DataFrame columns.
+
+        Returns (renamed_df, missing) where *missing* lists any canonical
+        names that could not be matched.  Uses exact match first, then
+        falls back to difflib closest match above *cutoff*.
+        """
+        actual = list(df.columns)
+        rename_map: dict[str, str] = {}
+        used: set[str] = set()
+
+        for canon in canonical_names:
+            if canon in actual and canon not in used:
+                used.add(canon)
+                continue  # already correct
+            candidates = [c for c in actual if c not in used]
+            matches = get_close_matches(canon, candidates, n=1, cutoff=cutoff)
+            if matches:
+                rename_map[matches[0]] = canon
+                used.add(matches[0])
+
+        missing = [c for c in canonical_names if c not in df.columns and c not in rename_map.values()]
+        renamed_df = df.rename(columns=rename_map)
+        if rename_map:
+            logger.info("Fuzzy column renames: %s", rename_map)
+        return renamed_df, missing
 
     # ------------------------------------------------------------------
     # Chart builder (Bokeh, same style as enrollment forecasting)
@@ -164,11 +197,30 @@ class ReforecastingAgent(BaseAgent):
         if load_err:
             return AgentResult(success=False, text_response="", error_message=load_err)
 
-        if "protocol_number" not in df.columns:
+        # Resolve columns via fuzzy matching
+        canonical = ["protocol_number", "month", "lower_bound", "mean_", "upper_bound", "target_subjected"]
+        df, missing = self._resolve_columns(df, canonical)
+
+        if "protocol_number" in missing:
             return AgentResult(
                 success=False, text_response="",
-                error_message=f"Column 'PROTOCOL_NUMBER' not found in dataset. Available columns: {list(df.columns)}",
+                error_message=f"Cannot identify a protocol column in dataset. Available columns: {list(df.columns)}",
             )
+
+        required_value_cols = [c for c in ("month", "lower_bound", "mean_", "upper_bound") if c in missing]
+        if required_value_cols:
+            return AgentResult(
+                success=False, text_response="",
+                error_message=(
+                    f"Could not match required columns {required_value_cols} "
+                    f"to dataset columns: {list(df.columns)}"
+                ),
+            )
+
+        # target_subjected is optional — fill with NaN if not matched
+        if "target_subjected" in missing:
+            import numpy as np
+            df["target_subjected"] = np.nan
 
         # Filter to the requested protocol
         mask = df["protocol_number"].astype(str).str.strip().str.upper() == protocol_id.upper()
@@ -185,37 +237,6 @@ class ReforecastingAgent(BaseAgent):
                     f"Available protocols: {sample}{suffix}"
                 ),
             )
-
-        # Resolve the month column
-        month_col = None
-        for candidate in ("month", "months", "time_months", "time"):
-            if candidate in filtered.columns:
-                month_col = candidate
-                break
-        if month_col is None:
-            # Fallback: first numeric column that isn't one of the value columns
-            value_cols = {"lower_bound", "mean_", "upper_bound", "target_subjected", "protocol_number"}
-            for col in filtered.columns:
-                if col not in value_cols and pd.api.types.is_numeric_dtype(filtered[col]):
-                    month_col = col
-                    break
-        if month_col is None:
-            return AgentResult(
-                success=False, text_response="",
-                error_message=f"Cannot identify a month/time column. Available columns: {list(filtered.columns)}",
-            )
-
-        # Rename to canonical 'month' for the chart builder
-        if month_col != "month":
-            filtered = filtered.rename(columns={month_col: "month"})
-
-        # Validate required value columns exist
-        for col in ("lower_bound", "mean_", "upper_bound", "target_subjected"):
-            if col not in filtered.columns:
-                return AgentResult(
-                    success=False, text_response="",
-                    error_message=f"Required column '{col}' not found in dataset. Available: {list(filtered.columns)}",
-                )
 
         filtered = filtered.sort_values("month").reset_index(drop=True)
 
