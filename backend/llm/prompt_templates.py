@@ -85,51 +85,52 @@ Which would you like to use? You can describe what you need or pick a number."""
 
 
 # ---------------------------------------------------------------------------
-# Subagent: Site List Matching
+# Subagent: Site List Matching — Column Inference
 # ---------------------------------------------------------------------------
 
-SITE_MATCHING_SYSTEM = """You are an expert clinical operations data specialist.
-Your task is to semantically match an uploaded list of clinical trial sites against a master CTMS site database.
+SITE_COLUMN_INFERENCE_SYSTEM = """\
+You are a data mapping specialist. You will be given the column names from two datasets:
+1. An uploaded CRO site list
+2. A CTMS master site database
 
-For each row in the uploaded file, determine whether it refers to the same real-world clinical site as any entry in the CTMS database.
-Use semantic matching — consider site name variations, abbreviations, alternate spellings, country codes vs. full names, and PI name formatting differences.
-A match requires confident identification of the same physical site; do not match on superficial similarity alone.
+Your task is to identify which column in each dataset best corresponds to these semantic roles:
+- **site_name**: The name of the clinical site or institution
+- **city**: The city where the site is located
+- **address**: The street address of the site
+- **site_id**: A unique site identifier (CTMS dataset only)
 
 Return a JSON object:
 {
-  "matches": [
-    {
-      "uploaded_index": <int, 0-based row index in the uploaded file>,
-      "uploaded_identifier": "<best identifying string from the uploaded row>",
-      "ctms_site_id": "<site_id from CTMS, e.g. SP-001>",
-      "ctms_site_name": "<site_name from CTMS>",
-      "match_confidence": "high|medium|low",
-      "match_basis": "<brief explanation of why this is a match>"
-    }
-  ],
-  "unmatched_indices": [<list of 0-based row indices with no match>],
-  "summary": {
-    "total_uploaded": <int>,
-    "matched": <int>,
-    "unmatched": <int>,
-    "notes": "<any overall observations about the match quality or ambiguities>"
+  "uploaded": {
+    "site_name": "<column name or null>",
+    "city": "<column name or null>",
+    "address": "<column name or null>"
+  },
+  "ctms": {
+    "site_name": "<column name or null>",
+    "city": "<column name or null>",
+    "address": "<column name or null>",
+    "site_id": "<column name or null>"
   }
 }
 
 Rules:
-- Only include a row in "matches" if you are reasonably confident it corresponds to a CTMS site.
-- Each uploaded row may match at most one CTMS site.
-- Each CTMS site may match at most one uploaded row (no duplicates).
-- All uploaded row indices not in "matches" must appear in "unmatched_indices".
+- Use exact column names as provided (case-sensitive).
+- If a role has no clear match, use null.
+- Consider common variations: "site_name", "Site Name", "institution", "facility", "center", "investigator_site", etc.
+- For city: "city", "City", "site_city", "location", etc.
+- For address: "address", "street", "street_address", "addr", "Address Line 1", etc.
+- For site_id: "site_id", "Site ID", "site_number", "CTMS ID", etc.
 - Return ONLY the JSON object, no markdown fences, no other text."""
 
-SITE_MATCHING_USER = """Uploaded site list ({n_uploaded} rows, CSV with index):
-{uploaded_data}
+SITE_COLUMN_INFERENCE_USER = """\
+Uploaded CRO site list columns:
+{uploaded_columns}
 
-CTMS master site database (CSV):
-{ctms_data}
+CTMS master site database columns:
+{ctms_columns}
 
-Match each uploaded row to the most appropriate CTMS site, or mark it as unmatched."""
+Identify the best column mapping for each dataset."""
 
 
 # ---------------------------------------------------------------------------
