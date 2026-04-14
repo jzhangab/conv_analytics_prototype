@@ -1,11 +1,10 @@
 """
 Site List Matching SubAgent.
 Accepts an uploaded site list and semantically matches each row against the
-CTMS master site database (data/CTMS_SITES.csv) via LLM.
+CTMS master site database (Dataiku dataset CTMS_DATASET) via LLM.
 """
 import io
 import logging
-from pathlib import Path
 
 import pandas as pd
 
@@ -17,21 +16,23 @@ from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-MAX_UPLOADED_ROWS = 200   # Safety cap for uploaded file rows sent to LLM
+BATCH_SIZE = 50   # Uploaded rows per LLM call (keeps prompt within context limits)
 
-_CTMS_FILE = Path(__file__).parent.parent.parent / "data" / "CTMS_SITES.csv"
+DEFAULT_CTMS_DATASET = "CTMS_DATASET"
 
 # CTMS columns relevant for matching (keep prompt compact)
 _CTMS_MATCH_COLS = ["site_id", "site_name", "country", "city", "pi_name"]
 
 
-def _df_to_csv_text(df: pd.DataFrame, max_rows: int = MAX_UPLOADED_ROWS) -> str:
-    if len(df) > max_rows:
-        df = df.head(max_rows)
-        suffix = f"\n[Truncated to {max_rows} rows]"
-    else:
-        suffix = ""
-    return df.to_csv(index=True) + suffix
+def _get_site_identifier(row):
+    """Best single-column identifier from an uploaded row."""
+    return str(
+        row.get("site_name")
+        or row.get("name")
+        or row.get("Site Name")
+        or row.get("Site")
+        or row.iloc[0]
+    )
 
 
 class SiteListMatchingAgent(BaseAgent):
@@ -39,8 +40,50 @@ class SiteListMatchingAgent(BaseAgent):
     display_name = "Clinical Site List Matching"
     description = "Semantically matches an uploaded site list against the CTMS master site database."
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_CTMS_DATASET):
         self.llm = llm_client
+        self.dataset_name = dataset_name
+
+    def _load_ctms_df(self):
+        """
+        Returns (df, error_string). error_string is None on success.
+        Loads from the Dataiku CTMS_DATASET dataset.
+        """
+        try:
+            import dataiku
+            df = dataiku.Dataset(self.dataset_name).get_dataframe()
+            df.columns = [str(c).strip() for c in df.columns]
+            logger.info("Loaded %d rows from Dataiku dataset '%s'.", len(df), self.dataset_name)
+            return df, None
+        except ImportError:
+            return None, "Dataiku SDK not available — cannot load CTMS dataset."
+        except Exception as e:
+            return None, f"Could not read Dataiku dataset '{self.dataset_name}': {e}"
+
+    def _match_batch(self, batch_df: pd.DataFrame, batch_offset: int,
+                     ctms_text: str) -> list[dict]:
+        """Run LLM matching on a single batch. Returns list of match dicts
+        with uploaded_index adjusted to the global offset."""
+        batch_csv = batch_df.to_csv(index=True)
+        n_batch = len(batch_df)
+
+        messages = [
+            {"role": "system", "content": SITE_MATCHING_SYSTEM},
+            {"role": "user", "content": SITE_MATCHING_USER.format(
+                uploaded_data=batch_csv,
+                ctms_data=ctms_text,
+                n_uploaded=n_batch,
+            )},
+        ]
+
+        raw = self.llm.complete_json(messages, temperature=self.llm.temp_deterministic)
+        matches, _unmatched, _summary = parse_site_matching_response(raw)
+
+        # Shift indices to global position
+        for m in matches:
+            m["uploaded_index"] = m["uploaded_index"] + batch_offset
+
+        return matches
 
     def run(self, params: dict, state: ConversationState) -> AgentResult:
         file_info = state.uploaded_files.get("site_file")
@@ -52,20 +95,12 @@ class SiteListMatchingAgent(BaseAgent):
             )
 
         # Load CTMS master list
-        if not _CTMS_FILE.exists():
+        ctms_df, load_err = self._load_ctms_df()
+        if load_err:
             return AgentResult(
                 success=False,
                 text_response="",
-                error_message=f"CTMS site file not found at {_CTMS_FILE}."
-            )
-        try:
-            ctms_df = pd.read_csv(_CTMS_FILE)
-            ctms_df.columns = [str(c).strip() for c in ctms_df.columns]
-        except Exception as e:
-            return AgentResult(
-                success=False,
-                text_response="",
-                error_message=f"Could not load CTMS site file: {e}"
+                error_message=load_err,
             )
 
         uploaded_df = pd.DataFrame(file_info["data"])
@@ -74,80 +109,50 @@ class SiteListMatchingAgent(BaseAgent):
         # Compact CTMS representation for matching prompt
         ctms_match_cols = [c for c in _CTMS_MATCH_COLS if c in ctms_df.columns]
         ctms_text = ctms_df[ctms_match_cols].to_csv(index=False)
-        uploaded_text = _df_to_csv_text(uploaded_df)
 
-        messages = [
-            {"role": "system", "content": SITE_MATCHING_SYSTEM},
-            {"role": "user", "content": SITE_MATCHING_USER.format(
-                uploaded_data=uploaded_text,
-                ctms_data=ctms_text,
-                n_uploaded=min(n_uploaded, MAX_UPLOADED_ROWS),
-            )},
-        ]
+        # Process uploaded rows in batches
+        all_matches: list[dict] = []
+        for start in range(0, n_uploaded, BATCH_SIZE):
+            batch_df = uploaded_df.iloc[start:start + BATCH_SIZE]
+            try:
+                batch_matches = self._match_batch(batch_df, start, ctms_text)
+                all_matches.extend(batch_matches)
+            except Exception as e:
+                logger.error("Site matching batch %d-%d failed: %s",
+                             start, start + len(batch_df), e)
 
-        try:
-            raw = self.llm.complete_json(messages, temperature=self.llm.temp_deterministic)
-            matches, unmatched_indices, summary = parse_site_matching_response(raw)
-        except Exception as e:
-            logger.error("Site matching LLM call failed: %s", e)
-            return AgentResult(
-                success=False,
-                text_response="",
-                error_message=f"Error during site matching: {e}"
-            )
-
-        n_matched = summary.get("matched", len(matches))
-        n_unmatched = summary.get("unmatched", n_uploaded - n_matched)
+        n_matched = len(all_matches)
+        n_unmatched = n_uploaded - n_matched
         match_rate = round(n_matched / max(n_uploaded, 1) * 100, 1)
 
         summary_text = (
             f"**Site List Matching Results**\n\n"
             f"Uploaded **{n_uploaded}** sites and compared against **{len(ctms_df)}** CTMS sites.\n\n"
             f"- Matched: **{n_matched}** sites ({match_rate}%)\n"
-            f"- Unmatched: **{n_unmatched}** sites\n\n"
-            f"{summary.get('notes', '')}"
+            f"- Unmatched: **{n_unmatched}** sites\n"
         ).strip()
 
         # Build result table: one row per uploaded site
+        matched_by_index = {m["uploaded_index"]: m for m in all_matches}
         table_data = []
-        matched_by_index = {m["uploaded_index"]: m for m in matches}
-        rows_to_show = min(n_uploaded, MAX_UPLOADED_ROWS)
 
-        for i in range(rows_to_show):
+        for i in range(n_uploaded):
             uploaded_row = uploaded_df.iloc[i]
-            # Best single-column identifier from the uploaded row
-            identifier = (
-                uploaded_row.get("site_name")
-                or uploaded_row.get("name")
-                or uploaded_row.get("Site Name")
-                or uploaded_row.get("Site")
-                or str(uploaded_row.iloc[0])
-            )
+            identifier = _get_site_identifier(uploaded_row)
             match = matched_by_index.get(i)
-            if match:
-                table_data.append({
-                    "Row": i + 1,
-                    "Uploaded Site": identifier,
-                    "Match Status": "Matched",
-                    "CTMS Site ID": match.get("ctms_site_id", ""),
-                    "CTMS Site Name": match.get("ctms_site_name", ""),
-                    "Confidence": match.get("match_confidence", ""),
-                    "Match Basis": match.get("match_basis", ""),
-                })
-            else:
-                table_data.append({
-                    "Row": i + 1,
-                    "Uploaded Site": identifier,
-                    "Match Status": "Not matched",
-                    "CTMS Site ID": "",
-                    "CTMS Site Name": "",
-                    "Confidence": "",
-                    "Match Basis": "",
-                })
+            table_data.append({
+                "Row": i + 1,
+                "Uploaded Site Name": identifier,
+                "Match Status": "Matched" if match else "Not matched",
+                "CTMS Site ID": match.get("ctms_site_id", "") if match else "",
+                "CTMS Site Name": match.get("ctms_site_name", "") if match else "",
+                "Confidence": match.get("match_confidence", "") if match else "",
+                "Match Basis": match.get("match_basis", "") if match else "",
+            })
 
         table_columns = [
-            "Row", "Uploaded Site", "Match Status",
-            "CTMS Site ID", "CTMS Site Name", "Confidence", "Match Basis",
+            "Row", "Uploaded Site Name", "CTMS Site Name",
+            "Match Status", "CTMS Site ID", "Confidence", "Match Basis",
         ]
 
         return AgentResult(

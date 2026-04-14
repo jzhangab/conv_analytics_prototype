@@ -23,9 +23,9 @@ VALID_INTENTS = {
     "country_ranking",
 }
 
-CONFIDENCE_THRESHOLD = 0.70
+CONFIDENCE_THRESHOLD = 0.85
 # data_reasoning uses a lower threshold — follow-up questions are phrased many ways
-DATA_REASONING_THRESHOLD = 0.60
+DATA_REASONING_THRESHOLD = 0.75
 
 
 def classify_intent(

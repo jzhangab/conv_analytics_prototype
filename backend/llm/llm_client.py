@@ -18,6 +18,7 @@ class LLMClient:
         self.temp_agents = config["llm_mesh"].get("temperature_agents", 0.3)
         self.temp_deterministic = config["llm_mesh"].get("temperature_deterministic", 0.0)
         self._client = None
+        self.call_log: list[dict] = []
 
     def _get_dataiku_client(self):
         """Lazy-initialize the Dataiku API client."""
@@ -48,10 +49,12 @@ class LLMClient:
                 pass  # older Dataiku SDK versions may not support this
 
             resp = completion.execute()
+            self.call_log.append({"messages": messages, "response": resp.text})
             return resp.text
 
         except Exception as e:
             logger.error("LLM Mesh call failed: %s", e)
+            self.call_log.append({"messages": messages, "response": f"ERROR: {e}", "error": True})
             raise
 
     def complete_json(self, messages: list[dict], temperature: float = None) -> dict:

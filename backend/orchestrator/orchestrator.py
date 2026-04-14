@@ -25,7 +25,11 @@ from backend.llm.prompt_templates import (ANALYSIS_PLAN_REVISE_USER,
                                             ANALYSIS_PLAN_USER,
                                             CLARIFICATION_MESSAGE,
                                             DATA_REASONING_SYSTEM,
-                                            DATA_REASONING_USER)
+                                            DATA_REASONING_USER,
+                                            GENERAL_KNOWLEDGE_SYSTEM,
+                                            GENERAL_KNOWLEDGE_USER,
+                                            MAX_GENERAL_SEARCH_ITERATIONS,
+                                            SKILLS_REMINDER)
 from backend.llm.web_search import WebSearchClient
 from backend.orchestrator.confirmation_manager import (build_confirmation_prompt,
                                                         parse_confirmation_reply)
@@ -221,15 +225,13 @@ class Orchestrator:
             return self._generate_plan(state, user_message, history)
 
         if intent is None:
-            state.fsm_state = FSMState.CLARIFICATION_REQUEST
-            msg = CLARIFICATION_MESSAGE
-            return self._build_response(message=msg, state=state)
+            return self._handle_general_question(state, user_message, history)
 
         # Data reasoning — classifier explicitly matched the intent
         if intent == "data_reasoning":
             if state.prior_results:
                 return self._generate_plan(state, user_message, history)
-            return self._handle_reasoning(state, user_message, history)
+            return self._handle_general_question(state, user_message, history)
 
         # Intent recognized — set active skill and extract params
         state.active_skill = intent
@@ -497,6 +499,80 @@ class Orchestrator:
         if self.llm.call_log:
             self.llm.call_log[-1]["label"] = "Data Reasoning"
 
+        return self._build_response(message=answer, state=state)
+
+    # ------------------------------------------------------------------
+    # General-knowledge fallback (web-search reasoning loop)
+    # ------------------------------------------------------------------
+
+    def _handle_general_question(
+        self,
+        state: ConversationState,
+        user_message: str,
+        history: list,
+    ) -> dict:
+        """Answer a general question using a web-search reasoning loop."""
+        state.fsm_state = FSMState.IDLE
+
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content']}" for m in history[:-1]
+        ) or "(no prior turns)"
+
+        all_search_results: list[tuple[str, str]] = []
+        answer = None
+
+        for iteration in range(MAX_GENERAL_SEARCH_ITERATIONS + 1):
+            if all_search_results:
+                results_block = "\n\nWeb search results gathered so far:\n"
+                for i, (query, result) in enumerate(all_search_results, 1):
+                    results_block += f"\n--- Search {i}: \"{query}\" ---\n{result}\n"
+            else:
+                results_block = ""
+
+            messages = [
+                {"role": "system", "content": GENERAL_KNOWLEDGE_SYSTEM.format(
+                    max_searches=MAX_GENERAL_SEARCH_ITERATIONS,
+                )},
+                {"role": "user", "content": GENERAL_KNOWLEDGE_USER.format(
+                    history=history_text,
+                    user_message=user_message,
+                    search_results=results_block,
+                )},
+            ]
+
+            try:
+                raw = self.llm.complete(messages, temperature=self.llm.temp_agents)
+            except Exception as e:
+                logger.error("General knowledge reasoning loop failed: %s", e)
+                return self._build_response(message=CLARIFICATION_MESSAGE, state=state)
+
+            if self.llm.call_log:
+                self.llm.call_log[-1]["label"] = f"General Knowledge (step {iteration + 1})"
+
+            try:
+                data = self.llm._parse_json(raw)
+            except (ValueError, Exception):
+                answer = raw.strip()
+                break
+
+            action = data.get("action", "answer")
+
+            if action == "search" and iteration < MAX_GENERAL_SEARCH_ITERATIONS:
+                query = data.get("query", user_message)
+                result = self.web_search.search(query)
+                if result:
+                    all_search_results.append((query, result))
+                else:
+                    all_search_results.append((query, "(No results returned)"))
+                continue
+
+            answer = data.get("answer", raw.strip())
+            break
+
+        if answer is None:
+            answer = "I wasn't able to find enough information to answer your question."
+
+        answer = answer.strip() + SKILLS_REMINDER
         return self._build_response(message=answer, state=state)
 
     def _format_results_context(self, state: ConversationState) -> str:
