@@ -21,6 +21,7 @@ VALID_INTENTS = {
     "data_reasoning",
     "protocol_analysis",
     "country_ranking",
+    "reforecasting",
 }
 
 CONFIDENCE_THRESHOLD = 0.85

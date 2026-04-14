@@ -160,6 +160,18 @@ skills:
           - "Phase 1/2"
           - "Phase 2/3"
 
+  reforecasting:
+    display_name: "Enrollment Reforecasting"
+    description: >
+      Retrieves and plots reforecast enrollment data for a specific protocol.
+      Shows lower bound, mean, and upper bound enrollment curves over time,
+      plus a target enrollment line. Data is loaded from the REFORECAST dataset.
+    required_parameters:
+      - name: protocol_id
+        label: "Protocol ID"
+        description: "The protocol number to look up in the REFORECAST dataset (e.g., PROTO-001)"
+        data_type: string
+
   protocol_analysis:
     display_name: "Clinical Trial Protocol Analysis"
     description: >

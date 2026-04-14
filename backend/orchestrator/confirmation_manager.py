@@ -8,9 +8,13 @@ from backend.state.parameter_schema import SkillSchema
 
 _SKILL_VERB = {
     "site_list_merger": "merge the uploaded site lists",
+    "site_list_matching": "match the uploaded site list against the CTMS database",
     "trial_benchmarking": "run Trial Benchmarking",
     "drug_reimbursement": "run Drug Reimbursement Assessment",
     "enrollment_forecasting": "run Enrollment Forecasting",
+    "protocol_analysis": "run Protocol Analysis",
+    "country_ranking": "run Country Ranking by Trial Experience",
+    "reforecasting": "run Enrollment Reforecasting",
 }
 
 _YES_WORDS = {"yes", "y", "yep", "yeah", "sure", "proceed", "go", "go ahead",

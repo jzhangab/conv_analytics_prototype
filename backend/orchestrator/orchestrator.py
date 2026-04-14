@@ -425,6 +425,8 @@ class Orchestrator:
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
             "protocol_analysis": "Protocol Analysis",
+            "country_ranking": "Country Ranking by Trial Experience",
+            "reforecasting": "Enrollment Reforecasting",
         }
         lines = []
         for i, result in enumerate(state.prior_results, 1):
@@ -583,6 +585,9 @@ class Orchestrator:
             "trial_benchmarking": "Trial Benchmarking",
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
+            "protocol_analysis": "Protocol Analysis",
+            "country_ranking": "Country Ranking by Trial Experience",
+            "reforecasting": "Enrollment Reforecasting",
         }
         MAX_TABLE_ROWS = 30
         MAX_TEXT_CHARS = 3000
@@ -630,6 +635,7 @@ class Orchestrator:
             "4": "enrollment_forecasting",
             "5": "protocol_analysis",
             "6": "country_ranking",
+            "7": "reforecasting",
         }
         stripped = message.strip().rstrip(".,")
         return skill_by_number.get(stripped)

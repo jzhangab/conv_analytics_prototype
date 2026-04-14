@@ -100,6 +100,7 @@ def _infer_call_label(messages):
     if "benchmarking" in system or "benchmark" in system: return "Trial Benchmarking Agent"
     if "reimbursement" in system or "hta" in system: return "Drug Reimbursement Agent"
     if "country ranking" in system or "country feasibility" in system: return "Country Ranking Agent"
+    if "reforecast" in system: return "Reforecasting Agent"
     if "enrollment" in system and ("pessimistic" in system or "scenario" in system):
         return "Enrollment Params Estimation"
     if "narrative" in system or ("enrollment" in system and "interpret" in system):
@@ -509,7 +510,9 @@ def build_app(orchestrator, session_store):
             "5. **Protocol Analysis** \u2014 Upload a protocol (PDF, DOCX, TXT) for a study "
             "design review  \n"
             "6. **Country Ranking** \u2014 Rank countries by trial experience for a given "
-            "indication  \n\n"
+            "indication  \n"
+            "7. **Enrollment Reforecasting** \u2014 View reforecast enrollment curves for a "
+            "specific protocol  \n\n"
             "After running any tool, you can ask me follow-up questions like:\n"
             "- *Based on this enrollment forecast, what is the best study design?*  \n"
             "- *What are the key risks given these benchmarks?*  \n"

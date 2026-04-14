@@ -10,6 +10,7 @@ llm_mesh:
 data_sources:
   citeline_dataset: "CITELINE_DATA"   # Dataiku dataset name for Citeline trial data
   ctms_dataset: "CTMS_DATASET"        # Dataiku dataset name for CTMS site data
+  reforecast_dataset: "REFORECAST"   # Dataiku dataset name for reforecast enrollment data
 
 session:
   timeout_minutes: 30

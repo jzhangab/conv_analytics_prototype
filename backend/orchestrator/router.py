@@ -7,6 +7,7 @@ from backend.agents.country_ranking_agent import CountryRankingAgent
 from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent
 from backend.agents.protocol_analysis_agent import ProtocolAnalysisAgent
+from backend.agents.reforecasting_agent import ReforecastingAgent
 from backend.agents.site_list_merger_agent import SiteListMatchingAgent, DEFAULT_CTMS_DATASET
 from backend.agents.trial_benchmarking_agent import TrialBenchmarkingAgent, DEFAULT_DATASET
 from backend.llm.llm_client import LLMClient
@@ -22,6 +23,9 @@ class Router:
         ctms_dataset = (
             (config or {}).get("data_sources", {}).get("ctms_dataset", DEFAULT_CTMS_DATASET)
         )
+        reforecast_dataset = (
+            (config or {}).get("data_sources", {}).get("reforecast_dataset", "REFORECAST")
+        )
         self._registry: dict[str, BaseAgent] = {
             "site_list_matching":   SiteListMatchingAgent(llm_client, dataset_name=ctms_dataset),
             "trial_benchmarking":   TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset,
@@ -30,6 +34,7 @@ class Router:
             "enrollment_forecasting": EnrollmentForecastingAgent(llm_client, web_search=web_search),
             "protocol_analysis":    ProtocolAnalysisAgent(llm_client, web_search=web_search),
             "country_ranking":     CountryRankingAgent(llm_client, web_search=web_search),
+            "reforecasting":       ReforecastingAgent(dataset_name=reforecast_dataset),
         }
 
     def get_agent(self, skill_id: str) -> BaseAgent | None:

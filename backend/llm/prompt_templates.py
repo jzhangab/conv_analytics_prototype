@@ -18,6 +18,7 @@ Available skills:
 5. data_reasoning — The user is asking a follow-up analytical or strategic question about results that were already generated in this conversation. They are NOT requesting a new skill run — they want interpretation, recommendations, or deeper analysis of existing output. Keywords: based on this, what does this mean, recommend, suggest, best approach, given these results, what should we do, explain, compare scenarios, implications, study design, next steps, risks, optimize, interpret.
 6. protocol_analysis — The user wants to upload and analyze a clinical trial protocol document to identify study design improvements, weaknesses, or recommendations. Keywords: analyze protocol, review protocol, protocol feedback, study design review, protocol assessment, upload protocol, protocol improvements, check my protocol.
 7. country_ranking — The user wants to rank or compare countries by their experience, capability, or suitability for running clinical trials in a specific indication. Keywords: rank countries, country selection, site selection by country, which countries, best countries for trials, country feasibility, global trial landscape, country experience, where to run trials.
+8. reforecasting — The user wants to view or plot reforecast enrollment data for a specific protocol. They will provide a protocol ID/number. Keywords: reforecast, reforecasting, protocol forecast, protocol enrollment, show reforecast, plot reforecast, protocol number, enrollment reforecast, updated forecast.
 
 Return a JSON object with exactly these fields:
 {
@@ -79,6 +80,7 @@ CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need
 4. **Enrollment & Site Activation Forecasting** — Generate enrollment and site activation curves (pessimistic / moderate / optimistic)
 5. **Protocol Analysis** — Upload a clinical trial protocol (PDF, DOCX, or TXT) for a detailed study design review and improvement recommendations
 6. **Country Ranking** — Rank countries by their experience and capability in executing trials for a given indication
+7. **Enrollment Reforecasting** — View reforecast enrollment curves for a specific protocol (provide a protocol ID)
 
 Which would you like to use? You can describe what you need or pick a number."""
 
@@ -665,6 +667,7 @@ SKILLS_REMINDER = """
 3. *Drug Reimbursement Assessment*
 4. *Enrollment & Site Activation Forecasting*
 5. *Protocol Analysis*
-6. *Country Ranking by Trial Experience*"""
+6. *Country Ranking by Trial Experience*
+7. *Enrollment Reforecasting*"""
 
 MAX_GENERAL_SEARCH_ITERATIONS = 3
