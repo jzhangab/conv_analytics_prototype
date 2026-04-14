@@ -6,6 +6,8 @@ using a 2-step Jaro-Winkler algorithm:
   Step 2: first 3 words of address + city concatenation (JW > 0.88)
 Column mapping is inferred via LLM reasoning on column names.
 """
+from __future__ import annotations
+
 import io
 import logging
 
