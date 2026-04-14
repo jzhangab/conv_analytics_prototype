@@ -124,6 +124,7 @@ class ReforecastingAgent(BaseAgent):
             title=f"Enrollment Reforecast \u2014 {protocol_id}",
             x_axis_label="Month",
             y_axis_label="Patients Enrolled",
+            x_axis_type="datetime",
             height=420,
             width=780,
             toolbar_location="above",
@@ -172,11 +173,11 @@ class ReforecastingAgent(BaseAgent):
         p.legend.click_policy = "hide"
 
         hover = HoverTool(tooltips=[
-            ("Month", "@month{0}"),
+            ("Month", "@month{%Y-%m}"),
             ("Lower Bound", "@lower_bound{0.0}"),
             ("Mean", "@mean_{0.0}"),
             ("Upper Bound", "@upper_bound{0.0}"),
-        ])
+        ], formatters={"@month": "datetime"})
         p.add_tools(hover)
 
         p.xgrid.grid_line_alpha = 0.3
@@ -222,6 +223,11 @@ class ReforecastingAgent(BaseAgent):
             import numpy as np
             df["target_subjected"] = np.nan
 
+        # Parse month column to datetime so Bokeh renders a proper time axis.
+        # Supports YYYY-MM strings as well as values already numeric or datetime.
+        if not pd.api.types.is_datetime64_any_dtype(df["month"]):
+            df["month"] = pd.to_datetime(df["month"], format="mixed", dayfirst=False)
+
         # Filter to the requested protocol
         mask = df["protocol_number"].astype(str).str.strip().str.upper() == protocol_id.upper()
         filtered = df[mask].copy()
@@ -250,13 +256,14 @@ class ReforecastingAgent(BaseAgent):
         # Build summary
         target = filtered["target_subjected"].dropna().iloc[0] if filtered["target_subjected"].notna().any() else None
         last_month = filtered["month"].iloc[-1]
+        last_month_label = last_month.strftime("%Y-%m")
         last_mean = filtered["mean_"].iloc[-1]
 
         summary = (
             f"**Enrollment Reforecast: {protocol_id}**\n\n"
             f"Showing **{len(filtered)}** monthly data points.\n\n"
-            f"- **Mean enrollment at month {int(last_month)}:** {last_mean:,.0f} patients\n"
-            f"- **Range at month {int(last_month)}:** {filtered['lower_bound'].iloc[-1]:,.0f} "
+            f"- **Mean enrollment at {last_month_label}:** {last_mean:,.0f} patients\n"
+            f"- **Range at {last_month_label}:** {filtered['lower_bound'].iloc[-1]:,.0f} "
             f"(lower) \u2013 {filtered['upper_bound'].iloc[-1]:,.0f} (upper)\n"
         )
         if target is not None:
@@ -266,7 +273,7 @@ class ReforecastingAgent(BaseAgent):
         table_data = []
         for _, row in filtered.iterrows():
             table_data.append({
-                "Month": int(row["month"]),
+                "Month": row["month"].strftime("%Y-%m"),
                 "Lower Bound": round(row["lower_bound"], 1),
                 "Mean": round(row["mean_"], 1),
                 "Upper Bound": round(row["upper_bound"], 1),
