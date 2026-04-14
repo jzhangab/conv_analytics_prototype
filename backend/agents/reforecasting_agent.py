@@ -1,6 +1,6 @@
 """
 Reforecasting SubAgent.
-Loads the REFORECAST Dataiku dataset, filters by PROTOCOL_NUMBER,
+Loads the REFORECAST Dataiku dataset, filters by protocol_number,
 and plots lower_bound / mean_ / upper_bound enrollment curves with a
 target_subjected horizontal reference line.
 """
@@ -38,7 +38,7 @@ class ReforecastingAgent(BaseAgent):
         try:
             import dataiku
             df = dataiku.Dataset(self.dataset_name).get_dataframe()
-            df.columns = [str(c).strip() for c in df.columns]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             logger.info("Loaded %d rows from Dataiku dataset '%s'.", len(df), self.dataset_name)
             return df, None
         except ImportError:
@@ -56,7 +56,7 @@ class ReforecastingAgent(BaseAgent):
             )
         try:
             df = pd.read_csv(_LOCAL_CSV)
-            df.columns = [str(c).strip() for c in df.columns]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             logger.info("Loaded %d rows from local CSV fallback.", len(df))
             return df, None
         except Exception as e:
@@ -164,18 +164,18 @@ class ReforecastingAgent(BaseAgent):
         if load_err:
             return AgentResult(success=False, text_response="", error_message=load_err)
 
-        if "PROTOCOL_NUMBER" not in df.columns:
+        if "protocol_number" not in df.columns:
             return AgentResult(
                 success=False, text_response="",
                 error_message=f"Column 'PROTOCOL_NUMBER' not found in dataset. Available columns: {list(df.columns)}",
             )
 
         # Filter to the requested protocol
-        mask = df["PROTOCOL_NUMBER"].astype(str).str.strip().str.upper() == protocol_id.upper()
+        mask = df["protocol_number"].astype(str).str.strip().str.upper() == protocol_id.upper()
         filtered = df[mask].copy()
 
         if filtered.empty:
-            available = sorted(df["PROTOCOL_NUMBER"].astype(str).str.strip().unique().tolist())
+            available = sorted(df["protocol_number"].astype(str).str.strip().unique().tolist())
             sample = ", ".join(available[:10])
             suffix = f" ... ({len(available)} total)" if len(available) > 10 else ""
             return AgentResult(
@@ -188,13 +188,13 @@ class ReforecastingAgent(BaseAgent):
 
         # Resolve the month column
         month_col = None
-        for candidate in ("month", "months", "time_months", "time", "Month", "MONTH", "TIME_MONTHS"):
+        for candidate in ("month", "months", "time_months", "time"):
             if candidate in filtered.columns:
                 month_col = candidate
                 break
         if month_col is None:
             # Fallback: first numeric column that isn't one of the value columns
-            value_cols = {"lower_bound", "mean_", "upper_bound", "target_subjected", "PROTOCOL_NUMBER"}
+            value_cols = {"lower_bound", "mean_", "upper_bound", "target_subjected", "protocol_number"}
             for col in filtered.columns:
                 if col not in value_cols and pd.api.types.is_numeric_dtype(filtered[col]):
                     month_col = col
