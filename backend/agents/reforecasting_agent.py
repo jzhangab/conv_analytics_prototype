@@ -225,8 +225,13 @@ class ReforecastingAgent(BaseAgent):
 
         # Parse month column to datetime so Bokeh renders a proper time axis.
         # Supports YYYY-MM strings as well as values already numeric or datetime.
+        # Use errors="coerce" so malformed dates (e.g. '20209-09') become NaT.
         if not pd.api.types.is_datetime64_any_dtype(df["month"]):
-            df["month"] = pd.to_datetime(df["month"], format="mixed", dayfirst=False)
+            df["month"] = pd.to_datetime(df["month"], format="mixed", dayfirst=False, errors="coerce")
+            n_bad = df["month"].isna().sum()
+            if n_bad:
+                logger.warning("Dropped %d rows with unparseable month values.", n_bad)
+                df = df.dropna(subset=["month"])
 
         # Filter to the requested protocol
         mask = df["protocol_number"].astype(str).str.strip().str.upper() == protocol_id.upper()
