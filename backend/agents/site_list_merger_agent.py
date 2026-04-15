@@ -9,6 +9,16 @@ Column mapping is inferred via LLM reasoning on column names.
 For matched sites, calculates performance metrics from the CTMS dataset:
   - Avg Enrolled: average of the ENROLLED column across all rows for that site
   - Avg Months Diff: average of the MONTHS_DIFF column across all rows for that site
+
+Performance caches (module-level, persist for the lifetime of the backend process):
+  _ctms_df_cache       — raw CTMS DataFrame, keyed by dataset name
+  _col_inference_cache — LLM column-mapping result, keyed by frozenset of column names
+  _ctms_keys_cache     — pre-built JW matching keys, keyed by (dataset, name_col, city_col, addr_col)
+  _ctms_metrics_cache  — pre-aggregated {site_id: {avg_enrolled, avg_months_diff}},
+                         keyed by (dataset, id_col, enrolled_col, months_diff_col)
+
+Call CROSiteProfilingAgent.clear_caches() to invalidate all caches (e.g. after the
+CTMS dataset is updated).
 """
 from __future__ import annotations
 
@@ -33,6 +43,23 @@ DEFAULT_CTMS_DATASET = "CTMS_DATASET"
 STEP1_THRESHOLD = 0.90
 STEP2_THRESHOLD = 0.88
 
+# ---------------------------------------------------------------------------
+# Module-level caches
+# ---------------------------------------------------------------------------
+
+# dataset_name -> pd.DataFrame
+_ctms_df_cache: dict[str, pd.DataFrame] = {}
+
+# frozenset(uploaded_col_names | ctms_col_names) -> col_map dict
+_col_inference_cache: dict[frozenset, dict] = {}
+
+# (dataset_name, name_col, city_col, addr_col) -> {"name_keys": list, "addr_keys": list}
+_ctms_keys_cache: dict[tuple, dict] = {}
+
+# (dataset_name, id_col, enrolled_col, months_diff_col)
+#   -> {site_id_value: {"avg_enrolled": float, "avg_months_diff": float}}
+_ctms_metrics_cache: dict[tuple, dict] = {}
+
 
 class CROSiteProfilingAgent(BaseAgent):
     skill_id = "cro_site_profiling"
@@ -44,16 +71,39 @@ class CROSiteProfilingAgent(BaseAgent):
         self.dataset_name = dataset_name
 
     # ------------------------------------------------------------------
+    # Cache management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def clear_caches() -> None:
+        """Invalidate all module-level caches (call after the CTMS dataset is updated)."""
+        _ctms_df_cache.clear()
+        _col_inference_cache.clear()
+        _ctms_keys_cache.clear()
+        _ctms_metrics_cache.clear()
+        logger.info("CROSiteProfilingAgent: all caches cleared.")
+
+    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
     def _load_ctms_df(self):
-        """Returns (df, error_string). error_string is None on success."""
+        """Returns (df, error_string). error_string is None on success.
+
+        The loaded DataFrame is cached for the lifetime of the backend process so
+        subsequent calls skip the Dataiku network round-trip.
+        """
+        if self.dataset_name in _ctms_df_cache:
+            logger.info("CTMS cache hit for dataset '%s'.", self.dataset_name)
+            return _ctms_df_cache[self.dataset_name], None
+
         try:
             import dataiku
             df = dataiku.Dataset(self.dataset_name).get_dataframe()
             df.columns = [str(c).strip() for c in df.columns]
-            logger.info("Loaded %d rows from Dataiku dataset '%s'.", len(df), self.dataset_name)
+            df = df.reset_index(drop=True)
+            logger.info("Loaded %d rows from Dataiku dataset '%s'; caching.", len(df), self.dataset_name)
+            _ctms_df_cache[self.dataset_name] = df
             return df, None
         except ImportError:
             return None, "Dataiku SDK not available — cannot load CTMS dataset."
@@ -65,7 +115,16 @@ class CROSiteProfilingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _infer_columns(self, uploaded_cols: list[str], ctms_cols: list[str]) -> dict:
-        """Use LLM to map column names to semantic roles for both datasets."""
+        """Use LLM to map column names to semantic roles for both datasets.
+
+        The result is cached by the frozenset of all column names so the LLM is
+        only called once per unique combination of uploaded + CTMS columns.
+        """
+        cache_key = frozenset(uploaded_cols) | frozenset(f"ctms::{c}" for c in ctms_cols)
+        if cache_key in _col_inference_cache:
+            logger.info("Column-inference cache hit.")
+            return _col_inference_cache[cache_key]
+
         messages = [
             {"role": "system", "content": SITE_COLUMN_INFERENCE_SYSTEM},
             {"role": "user", "content": SITE_COLUMN_INFERENCE_USER.format(
@@ -76,6 +135,7 @@ class CROSiteProfilingAgent(BaseAgent):
         result = self.llm.complete_json(messages, temperature=self.llm.temp_deterministic)
         if self.llm.call_log:
             self.llm.call_log[-1]["label"] = "Column Inference"
+        _col_inference_cache[cache_key] = result
         return result
 
     # ------------------------------------------------------------------
@@ -157,79 +217,106 @@ class CROSiteProfilingAgent(BaseAgent):
         return final
 
     # ------------------------------------------------------------------
-    # Site metrics from CTMS dataset
+    # CTMS key caching
     # ------------------------------------------------------------------
 
-    def _compute_site_metrics(
+    def _get_ctms_keys(
+        self,
+        ctms_df: pd.DataFrame,
+        c_name_col: str | None,
+        c_city_col: str | None,
+        c_addr_col: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """Return (name_keys, addr_keys) for the CTMS df, building and caching on first call."""
+        cache_key = (self.dataset_name, c_name_col, c_city_col, c_addr_col)
+        if cache_key in _ctms_keys_cache:
+            logger.info("CTMS keys cache hit.")
+            cached = _ctms_keys_cache[cache_key]
+            return cached["name_keys"], cached["addr_keys"]
+
+        name_keys = self._build_keys(ctms_df, c_name_col, c_city_col)
+        addr_keys = (
+            self._build_address_keys(ctms_df, c_addr_col, c_city_col)
+            if c_addr_col else []
+        )
+        _ctms_keys_cache[cache_key] = {"name_keys": name_keys, "addr_keys": addr_keys}
+        logger.info("Built and cached CTMS keys for dataset '%s'.", self.dataset_name)
+        return name_keys, addr_keys
+
+    # ------------------------------------------------------------------
+    # Site metrics — pre-aggregated lookup table
+    # ------------------------------------------------------------------
+
+    def _get_site_metrics_lookup(
         self,
         ctms_df: pd.DataFrame,
         id_col: str | None,
-        all_matches: dict[int, dict],
-    ) -> dict[int, dict]:
-        """Compute avg ENROLLED and avg MONTHS_DIFF for each matched CTMS site.
+    ) -> dict:
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, avg_months_diff}.
 
-        Groups all CTMS rows that share the same site identifier (id_col) and
-        averages the ENROLLED and MONTHS_DIFF columns.  Returns a dict keyed
-        by ctms_idx with {"avg_enrolled": float, "avg_months_diff": float}.
+        On first call the full groupby aggregation is run and the result is stored in
+        _ctms_metrics_cache.  Subsequent calls with the same dataset + column combination
+        skip the computation entirely and return the cached dict in O(1).
+
+        Without a site ID column the lookup is keyed by integer row index (no grouping).
         """
-        if not all_matches:
-            return {}
-
-        # Find the metric columns (case-insensitive)
+        # Resolve actual metric column names (case-insensitive)
         col_lower = {c.lower(): c for c in ctms_df.columns}
         enrolled_col = col_lower.get("enrolled")
         months_diff_col = col_lower.get("months_diff")
 
+        cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col)
+        if cache_key in _ctms_metrics_cache:
+            logger.info("Site metrics cache hit.")
+            return _ctms_metrics_cache[cache_key]
+
         if enrolled_col is None and months_diff_col is None:
             logger.warning("CTMS dataset has neither ENROLLED nor MONTHS_DIFF columns; skipping metrics.")
-            return {}
+            result: dict = {}
+            _ctms_metrics_cache[cache_key] = result
+            return result
 
-        # Determine the grouping key column — prefer site_id, fall back to index
         if id_col and id_col in ctms_df.columns:
-            group_col = id_col
-        else:
-            # Without an ID column we cannot reliably group rows for the same
-            # site, so fall back to per-row values (no aggregation).
-            metrics: dict[int, dict] = {}
-            for match_info in all_matches.values():
-                c_idx = match_info["ctms_idx"]
-                row = ctms_df.iloc[c_idx]
+            # Aggregate all rows per site_id — these are the "stored rules"
+            agg_cols: dict[str, str] = {}
+            if enrolled_col:
+                agg_cols[enrolled_col] = "mean"
+            if months_diff_col:
+                agg_cols[months_diff_col] = "mean"
+
+            grouped = ctms_df.groupby(id_col, dropna=False).agg(agg_cols)
+
+            # Build ctms_idx -> metrics dict using the site_id of each row as the key
+            lookup: dict[int, dict] = {}
+            for c_idx in ctms_df.index:
+                site_id_val = ctms_df.at[c_idx, id_col]
+                if pd.isna(site_id_val) or site_id_val not in grouped.index:
+                    lookup[c_idx] = {}
+                    continue
+                grp = grouped.loc[site_id_val]
                 m: dict = {}
+                if enrolled_col and pd.notna(grp[enrolled_col]):
+                    m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
+                if months_diff_col and pd.notna(grp[months_diff_col]):
+                    m["avg_months_diff"] = round(float(grp[months_diff_col]), 2)
+                lookup[c_idx] = m
+        else:
+            # No ID column: per-row values (no aggregation possible)
+            lookup = {}
+            for c_idx in ctms_df.index:
+                row = ctms_df.iloc[c_idx]
+                m = {}
                 if enrolled_col is not None:
                     val = row[enrolled_col]
                     m["avg_enrolled"] = round(float(val), 2) if pd.notna(val) else ""
                 if months_diff_col is not None:
                     val = row[months_diff_col]
                     m["avg_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
-                metrics[c_idx] = m
-            return metrics
+                lookup[c_idx] = m
 
-        # Build group-level averages: site_id → {avg_enrolled, avg_months_diff}
-        agg_cols = {}
-        if enrolled_col is not None:
-            agg_cols[enrolled_col] = "mean"
-        if months_diff_col is not None:
-            agg_cols[months_diff_col] = "mean"
-
-        grouped = ctms_df.groupby(group_col, dropna=False).agg(agg_cols)
-
-        # Map each matched ctms_idx to the group-level averages
-        metrics = {}
-        for match_info in all_matches.values():
-            c_idx = match_info["ctms_idx"]
-            site_id_val = ctms_df.at[c_idx, group_col]
-            if pd.isna(site_id_val) or site_id_val not in grouped.index:
-                metrics[c_idx] = {}
-                continue
-            grp = grouped.loc[site_id_val]
-            m = {}
-            if enrolled_col is not None and pd.notna(grp[enrolled_col]):
-                m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
-            if months_diff_col is not None and pd.notna(grp[months_diff_col]):
-                m["avg_months_diff"] = round(float(grp[months_diff_col]), 2)
-            metrics[c_idx] = m
-
-        return metrics
+        logger.info("Pre-aggregated site metrics for dataset '%s'; caching.", self.dataset_name)
+        _ctms_metrics_cache[cache_key] = lookup
+        return lookup
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -249,11 +336,10 @@ class CROSiteProfilingAgent(BaseAgent):
 
         uploaded_df = pd.DataFrame(file_info["data"])
         uploaded_df = uploaded_df.reset_index(drop=True)
-        ctms_df = ctms_df.reset_index(drop=True)
         n_uploaded = len(uploaded_df)
         n_ctms = len(ctms_df)
 
-        # --- LLM column inference ---
+        # --- LLM column inference (cached) ---
         try:
             col_map = self._infer_columns(
                 list(uploaded_df.columns), list(ctms_df.columns),
@@ -278,10 +364,15 @@ class CROSiteProfilingAgent(BaseAgent):
 
         logger.info("Column mapping — uploaded: %s, ctms: %s", u_map, c_map)
 
-        # --- Step 1: site_name + city (JW > 0.9) ---
+        # --- Build uploaded keys (always fresh — varies by file) ---
         uploaded_name_keys = self._build_keys(uploaded_df, u_name_col, u_city_col)
-        ctms_name_keys = self._build_keys(ctms_df, c_name_col, c_city_col)
 
+        # --- Get CTMS keys (cached) ---
+        ctms_name_keys, ctms_addr_keys = self._get_ctms_keys(
+            ctms_df, c_name_col, c_city_col, c_addr_col,
+        )
+
+        # --- Step 1: site_name + city (JW > 0.9) ---
         step1_matches = self._match_step(
             uploaded_name_keys, ctms_name_keys, STEP1_THRESHOLD, set(), set(),
         )
@@ -290,10 +381,8 @@ class CROSiteProfilingAgent(BaseAgent):
 
         # --- Step 2: first 3 words of address + city (JW > 0.88) ---
         step2_matches = []
-        if u_addr_col and c_addr_col:
+        if u_addr_col and c_addr_col and ctms_addr_keys:
             uploaded_addr_keys = self._build_address_keys(uploaded_df, u_addr_col, u_city_col)
-            ctms_addr_keys = self._build_address_keys(ctms_df, c_addr_col, c_city_col)
-
             step2_matches = self._match_step(
                 uploaded_addr_keys, ctms_addr_keys, STEP2_THRESHOLD,
                 matched_uploaded, matched_ctms,
@@ -321,8 +410,8 @@ class CROSiteProfilingAgent(BaseAgent):
         n_unmatched = n_uploaded - n_matched
         match_rate = round(n_matched / max(n_uploaded, 1) * 100, 1)
 
-        # --- Compute per-site metrics from CTMS dataset ---
-        site_metrics = self._compute_site_metrics(ctms_df, c_id_col, all_matches)
+        # --- Get pre-aggregated site metrics lookup (cached) ---
+        site_metrics_lookup = self._get_site_metrics_lookup(ctms_df, c_id_col)
 
         summary_text = (
             f"**CRO Site Profiling Results**\n\n"
@@ -344,7 +433,7 @@ class CROSiteProfilingAgent(BaseAgent):
                 c_idx = match["ctms_idx"]
                 c_name = self._safe_str(ctms_df, c_name_col, c_idx)
                 c_id = self._safe_str(ctms_df, c_id_col, c_idx) if c_id_col else ""
-                metrics = site_metrics.get(c_idx, {})
+                metrics = site_metrics_lookup.get(c_idx, {})
                 table_data.append({
                     "Row": i + 1,
                     "Uploaded Site Name": u_name,
