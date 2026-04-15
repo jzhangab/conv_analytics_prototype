@@ -24,6 +24,7 @@ from backend.state.conversation_state import FSMState
 
 _CHAT_WIDTH_HTML = """\
 <style id="chat-width-override">
+  /* Top-level chat containers */
   [class*="chat"], [class*="Chat"],
   .bk-panel-models-chat-ChatInterface,
   .bk-panel-models-chat-ChatFeed,
@@ -33,41 +34,66 @@ _CHAT_WIDTH_HTML = """\
     box-sizing: border-box !important;
     flex-shrink: 0 !important;
   }
+  /* ALL descendants of chat containers — catches deep Bokeh/Panel nesting */
+  [class*="chat"] *,
+  .bk-panel-models-chat-ChatInterface *,
+  .bk-panel-models-chat-ChatFeed *,
+  .bk-panel-models-chat-ChatMessage * {
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  /* Force width on layout wrappers that Panel generates inside messages */
   [class*="chat"] .bk,
   [class*="chat"] .bk-root,
   [class*="chat"] .bk-Column,
   [class*="chat"] .bk-Row,
   [class*="chat"] > div,
-  [class*="chat"] > div > div {
+  [class*="chat"] > div > div,
+  [class*="chat"] .bk-panel-models-layout-Column,
+  [class*="chat"] .bk-panel-models-layout-Row {
     max-width: 100% !important;
     width:     100% !important;
     box-sizing: border-box !important;
   }
+  /* Markdown / bubble content */
   [class*="chat"] .bk-panel-models-markup-Markdown,
+  [class*="chat"] .bk-panel-models-markup-HTML,
   [class*="chat"] .markdown,
-  [class*="chat"] .pn-ChatMessage__bubble {
+  [class*="chat"] .pn-ChatMessage__bubble,
+  [class*="chat"] .message {
     max-width: 100% !important;
     width:     100% !important;
+  }
+  /* Override any flex-basis that limits message content width */
+  .bk-panel-models-chat-ChatMessage .bk-Column,
+  .bk-panel-models-chat-ChatMessage .bk-Row,
+  .bk-panel-models-chat-ChatMessage .bk {
+    flex-basis: 100% !important;
+    flex-grow: 1 !important;
+    min-width: 0 !important;
   }
 </style>
 <script>
 (function () {
-  var SELECTORS = [
-    '[class*="chat"]', '[class*="Chat"]',
-    '.bk-panel-models-chat-ChatInterface',
-    '.bk-panel-models-chat-ChatFeed',
-    '.bk-panel-models-chat-ChatMessage',
-  ];
   function forceWide() {
-    SELECTORS.forEach(function (sel) {
-      document.querySelectorAll(sel).forEach(function (el) {
-        el.style.setProperty('max-width', '100%', 'important');
-        el.style.setProperty('width',     '100%', 'important');
-        el.style.setProperty('box-sizing','border-box','important');
-        Array.prototype.forEach.call(el.children, function (child) {
-          child.style.setProperty('max-width', '100%', 'important');
-          child.style.setProperty('width',     '100%', 'important');
-        });
+    document.querySelectorAll(
+      '[class*="chat"], [class*="Chat"], '
+      + '.bk-panel-models-chat-ChatInterface, '
+      + '.bk-panel-models-chat-ChatFeed, '
+      + '.bk-panel-models-chat-ChatMessage'
+    ).forEach(function (el) {
+      el.style.setProperty('max-width', '100%', 'important');
+      el.style.setProperty('width',     '100%', 'important');
+      el.style.setProperty('box-sizing','border-box','important');
+      /* Traverse ALL descendants, not just direct children */
+      el.querySelectorAll('*').forEach(function (child) {
+        child.style.setProperty('max-width', '100%', 'important');
+        child.style.setProperty('box-sizing','border-box','important');
+        var tag = child.tagName;
+        /* Set width:100% on div/section layout wrappers, skip inline elements */
+        if (tag === 'DIV' || tag === 'SECTION' || child.classList.length > 0) {
+          child.style.setProperty('width', '100%', 'important');
+        }
       });
     });
   }
