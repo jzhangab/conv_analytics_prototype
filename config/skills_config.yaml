@@ -1,14 +1,14 @@
 skills:
-  site_list_matching:
-    display_name: "Clinical Site List Matching"
+  cro_site_profiling:
+    display_name: "CRO Site Profiling"
     description: >
-      Matches an uploaded site list against the CTMS master site database using semantic
-      matching. Identifies which uploaded sites correspond to known CTMS sites, and flags
-      unrecognized sites. Accepts CSV or Excel file uploads.
+      Matches an uploaded CRO site list against the CTMS master site database and profiles
+      each matched site with performance metrics (average enrolled patients per site,
+      average months diff). Accepts CSV or Excel file uploads.
     required_parameters:
       - name: site_file
         label: "Site List File"
-        description: "CSV or Excel file containing the list of clinical sites to match against CTMS"
+        description: "CSV or Excel file containing the list of clinical sites to match and profile against CTMS"
         data_type: file
 
   trial_benchmarking:

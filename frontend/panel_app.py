@@ -122,7 +122,7 @@ def _infer_call_label(messages):
     if "routing assistant" in system or ("intent" in system and "skill" in system):
         return "Intent Classification"
     if "parameter extraction" in system: return "Parameter Extraction"
-    if "site list" in system or "ctms" in system: return "Site List Matching Agent"
+    if "site list" in system or "ctms" in system: return "CRO Site Profiling Agent"
     if "benchmarking" in system or "benchmark" in system: return "Trial Benchmarking Agent"
     if "reimbursement" in system or "hta" in system: return "Drug Reimbursement Agent"
     if "country ranking" in system or "country feasibility" in system: return "Country Ranking Agent"
@@ -526,8 +526,8 @@ def build_app(orchestrator, session_store):
     chat.send(
         pn.pane.Markdown(
             "Hello! I'm your **Clinical Analytics Assistant**. I can help you with:\n\n"
-            "1. **Site List Matching** \u2014 Upload a site list and match it against the "
-            "CTMS master database  \n"
+            "1. **CRO Site Profiling** \u2014 Upload a site list, match it against the "
+            "CTMS database, and calculate site performance metrics  \n"
             "2. **Trial Benchmarking** \u2014 Benchmark trials by indication, age group, "
             "and phase  \n"
             "3. **Drug Reimbursement** \u2014 Assess reimbursement outlook by country  \n"
@@ -563,7 +563,7 @@ def build_app(orchestrator, session_store):
             parsed = parse_uploaded_file(_FakeFileStorage(filename, upload_cro.value))
             state = session_store.get_or_create(session_id)
             state.uploaded_files["site_file"] = parsed
-            state.active_skill = "site_list_matching"
+            state.active_skill = "cro_site_profiling"
             state.fsm_state = FSMState.PARAMETER_GATHERING
             upload_status.object = (
                 f"\u2705 **CRO file loaded:** {filename} \u2014 {len(parsed['data'])} rows, "
@@ -620,7 +620,7 @@ def build_app(orchestrator, session_store):
     # -- Upload bars ------------------------------------------------------------
     upload_bar = pn.Row(
         pn.pane.Markdown(
-            "\U0001f4c2 **CRO Site List** *(for Site List Merger)*",
+            "\U0001f4c2 **CRO Site List** *(for CRO Site Profiling)*",
             margin=(6, 10, 0, 0),
             styles={"font-size": "13px", "white-space": "nowrap"},
         ),

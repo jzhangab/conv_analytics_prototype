@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 VALID_INTENTS = {
     "site_list_merger",
     "site_list_matching",
+    "cro_site_profiling",
     "trial_benchmarking",
     "drug_reimbursement",
     "enrollment_forecasting",
@@ -22,6 +23,13 @@ VALID_INTENTS = {
     "protocol_analysis",
     "country_ranking",
     "reforecasting",
+}
+
+# Map legacy intent names to the current canonical skill ID so old LLM
+# responses still route correctly.
+_INTENT_ALIASES = {
+    "site_list_merger":   "cro_site_profiling",
+    "site_list_matching": "cro_site_profiling",
 }
 
 CONFIDENCE_THRESHOLD = 0.85
@@ -57,6 +65,9 @@ def classify_intent(
 
     if intent not in VALID_INTENTS:
         return None, confidence, reasoning
+
+    # Normalize legacy intent names to the current canonical ID
+    intent = _INTENT_ALIASES.get(intent, intent)
 
     threshold = DATA_REASONING_THRESHOLD if intent == "data_reasoning" else CONFIDENCE_THRESHOLD
     if confidence < threshold:

@@ -25,7 +25,7 @@
   // ---- Init ----
   appendAssistantMessage(
     "Hello! I'm your Clinical Analytics Assistant. I can help you with:\n\n" +
-    "1. **Site List Merger** — Merge CRO and sponsor clinical site lists\n" +
+    "1. **CRO Site Profiling** — Match and profile CRO site lists against the CTMS database\n" +
     "2. **Trial Benchmarking** — Benchmark trials by indication, age group, and phase\n" +
     "3. **Drug Reimbursement** — Assess reimbursement outlook by country\n" +
     "4. **Enrollment Forecasting** — Forecast enrollment and site activation curves\n\n" +
@@ -111,7 +111,7 @@
     fsmState = data.fsm_state || 'idle';
 
     // Show or hide upload panel based on active skill
-    if (data.active_skill === 'site_list_merger') {
+    if (data.active_skill === 'cro_site_profiling') {
       uploadPanel.classList.remove('hidden');
     }
 

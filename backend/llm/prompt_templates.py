@@ -11,7 +11,7 @@ INTENT_CLASSIFIER_SYSTEM = """You are an intent classification assistant for a c
 Your sole job is to identify which one of the following skills the user is asking for, based on their message and conversation history.
 
 Available skills:
-1. site_list_matching — The user wants to match, compare, or check a list of clinical trial sites against the CTMS master database to identify which sites are known. Keywords: match sites, site matching, check sites against CTMS, identify sites, which sites are in CTMS, site list comparison.
+1. cro_site_profiling — The user wants to match, compare, profile, or check a list of clinical trial sites against the CTMS master database. This includes identifying which sites are known and calculating site performance metrics. Keywords: match sites, site matching, site profiling, CRO site profiling, check sites against CTMS, identify sites, which sites are in CTMS, site list comparison, site metrics, site performance.
 2. trial_benchmarking — The user wants to benchmark or compare clinical trials by indication, age group, or phase. Keywords: benchmark trials, compare trials, trial landscape, enrollment benchmarks, how do similar trials perform.
 3. drug_reimbursement — The user wants to assess reimbursement likelihood or HTA requirements for a drug by country. Keywords: reimbursement, HTA, market access, payer, coverage, health technology assessment.
 4. enrollment_forecasting — The user wants to forecast or project patient enrollment and/or site activation over time, typically shown as a graph or timeline. Keywords: forecast enrollment, enrollment projection, site activation forecast, recruitment timeline, enrollment curve.
@@ -74,7 +74,7 @@ Extract the parameter values."""
 
 CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need. Here's what I can help with:
 
-1. **Clinical Site List Matching** — Upload a site list and match it against the CTMS master database to identify known sites
+1. **CRO Site Profiling** — Upload a site list, match it against the CTMS database, and calculate site performance metrics
 2. **Clinical Trial Benchmarking** — Benchmark trials by indication, age group, and phase
 3. **Drug Reimbursement Assessment** — Assess reimbursement outlook by country for a given indication and phase
 4. **Enrollment & Site Activation Forecasting** — Generate enrollment and site activation curves (pessimistic / moderate / optimistic)
@@ -662,7 +662,7 @@ SKILLS_REMINDER = """
 
 ---
 *If your question relates to one of my analytical capabilities, I can do a deeper data-driven analysis:*
-1. *Clinical Site List Matching*
+1. *CRO Site Profiling*
 2. *Trial Benchmarking*
 3. *Drug Reimbursement Assessment*
 4. *Enrollment & Site Activation Forecasting*

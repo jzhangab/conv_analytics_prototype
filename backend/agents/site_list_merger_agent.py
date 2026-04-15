@@ -1,10 +1,14 @@
 """
-Site List Matching SubAgent.
+CRO Site Profiling SubAgent.
 Matches an uploaded CRO site list against the CTMS master site database
 using a 2-step Jaro-Winkler algorithm:
   Step 1: site_name + city concatenation (JW > 0.9)
   Step 2: first 3 words of address + city concatenation (JW > 0.88)
 Column mapping is inferred via LLM reasoning on column names.
+
+For matched sites, calculates performance metrics from the CTMS dataset:
+  - Avg Enrolled: average of the ENROLLED column across all rows for that site
+  - Avg Months Diff: average of the MONTHS_DIFF column across all rows for that site
 """
 from __future__ import annotations
 
@@ -30,10 +34,10 @@ STEP1_THRESHOLD = 0.90
 STEP2_THRESHOLD = 0.88
 
 
-class SiteListMatchingAgent(BaseAgent):
-    skill_id = "site_list_matching"
-    display_name = "Clinical Site List Matching"
-    description = "Matches an uploaded site list against the CTMS master database using Jaro-Winkler similarity."
+class CROSiteProfilingAgent(BaseAgent):
+    skill_id = "cro_site_profiling"
+    display_name = "CRO Site Profiling"
+    description = "Matches an uploaded site list against the CTMS master database and calculates site performance metrics."
 
     def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_CTMS_DATASET):
         self.llm = llm_client
@@ -93,8 +97,8 @@ class SiteListMatchingAgent(BaseAgent):
         """Build site_name + city concatenation keys for each row."""
         keys = []
         for idx in df.index:
-            name = SiteListMatchingAgent._safe_str(df, name_col, idx)
-            city = SiteListMatchingAgent._safe_str(df, city_col, idx)
+            name = CROSiteProfilingAgent._safe_str(df, name_col, idx)
+            city = CROSiteProfilingAgent._safe_str(df, city_col, idx)
             keys.append(f"{name} {city}".strip())
         return keys
 
@@ -105,8 +109,8 @@ class SiteListMatchingAgent(BaseAgent):
         """Build first-3-words-of-address + city concatenation keys."""
         keys = []
         for idx in df.index:
-            addr = SiteListMatchingAgent._safe_str(df, addr_col, idx)
-            city = SiteListMatchingAgent._safe_str(df, city_col, idx)
+            addr = CROSiteProfilingAgent._safe_str(df, addr_col, idx)
+            city = CROSiteProfilingAgent._safe_str(df, city_col, idx)
             addr_short = first_n_words(addr, 3)
             keys.append(f"{addr_short} {city}".strip())
         return keys
@@ -151,6 +155,81 @@ class SiteListMatchingAgent(BaseAgent):
             used_uploaded.add(u_idx)
             final.append((u_idx, c_idx, score))
         return final
+
+    # ------------------------------------------------------------------
+    # Site metrics from CTMS dataset
+    # ------------------------------------------------------------------
+
+    def _compute_site_metrics(
+        self,
+        ctms_df: pd.DataFrame,
+        id_col: str | None,
+        all_matches: dict[int, dict],
+    ) -> dict[int, dict]:
+        """Compute avg ENROLLED and avg MONTHS_DIFF for each matched CTMS site.
+
+        Groups all CTMS rows that share the same site identifier (id_col) and
+        averages the ENROLLED and MONTHS_DIFF columns.  Returns a dict keyed
+        by ctms_idx with {"avg_enrolled": float, "avg_months_diff": float}.
+        """
+        if not all_matches:
+            return {}
+
+        # Find the metric columns (case-insensitive)
+        col_lower = {c.lower(): c for c in ctms_df.columns}
+        enrolled_col = col_lower.get("enrolled")
+        months_diff_col = col_lower.get("months_diff")
+
+        if enrolled_col is None and months_diff_col is None:
+            logger.warning("CTMS dataset has neither ENROLLED nor MONTHS_DIFF columns; skipping metrics.")
+            return {}
+
+        # Determine the grouping key column — prefer site_id, fall back to index
+        if id_col and id_col in ctms_df.columns:
+            group_col = id_col
+        else:
+            # Without an ID column we cannot reliably group rows for the same
+            # site, so fall back to per-row values (no aggregation).
+            metrics: dict[int, dict] = {}
+            for match_info in all_matches.values():
+                c_idx = match_info["ctms_idx"]
+                row = ctms_df.iloc[c_idx]
+                m: dict = {}
+                if enrolled_col is not None:
+                    val = row[enrolled_col]
+                    m["avg_enrolled"] = round(float(val), 2) if pd.notna(val) else ""
+                if months_diff_col is not None:
+                    val = row[months_diff_col]
+                    m["avg_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
+                metrics[c_idx] = m
+            return metrics
+
+        # Build group-level averages: site_id → {avg_enrolled, avg_months_diff}
+        agg_cols = {}
+        if enrolled_col is not None:
+            agg_cols[enrolled_col] = "mean"
+        if months_diff_col is not None:
+            agg_cols[months_diff_col] = "mean"
+
+        grouped = ctms_df.groupby(group_col, dropna=False).agg(agg_cols)
+
+        # Map each matched ctms_idx to the group-level averages
+        metrics = {}
+        for match_info in all_matches.values():
+            c_idx = match_info["ctms_idx"]
+            site_id_val = ctms_df.at[c_idx, group_col]
+            if pd.isna(site_id_val) or site_id_val not in grouped.index:
+                metrics[c_idx] = {}
+                continue
+            grp = grouped.loc[site_id_val]
+            m = {}
+            if enrolled_col is not None and pd.notna(grp[enrolled_col]):
+                m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
+            if months_diff_col is not None and pd.notna(grp[months_diff_col]):
+                m["avg_months_diff"] = round(float(grp[months_diff_col]), 2)
+            metrics[c_idx] = m
+
+        return metrics
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -242,13 +321,18 @@ class SiteListMatchingAgent(BaseAgent):
         n_unmatched = n_uploaded - n_matched
         match_rate = round(n_matched / max(n_uploaded, 1) * 100, 1)
 
+        # --- Compute per-site metrics from CTMS dataset ---
+        site_metrics = self._compute_site_metrics(ctms_df, c_id_col, all_matches)
+
         summary_text = (
-            f"**Site List Matching Results**\n\n"
+            f"**CRO Site Profiling Results**\n\n"
             f"Uploaded **{n_uploaded}** sites and compared against **{n_ctms}** CTMS sites.\n\n"
             f"- **Step 1** (site name + city, JW > {STEP1_THRESHOLD}): **{n_step1}** matches\n"
             f"- **Step 2** (address + city, JW > {STEP2_THRESHOLD}): **{n_step2}** additional matches\n"
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
-            f"- **Unmatched: {n_unmatched}**"
+            f"- **Unmatched: {n_unmatched}**\n\n"
+            f"For matched sites, **Avg Enrolled** and **Avg Months Diff** are calculated "
+            f"from all rows of the matched site in the CTMS dataset."
         )
 
         # --- Build result table ---
@@ -260,6 +344,7 @@ class SiteListMatchingAgent(BaseAgent):
                 c_idx = match["ctms_idx"]
                 c_name = self._safe_str(ctms_df, c_name_col, c_idx)
                 c_id = self._safe_str(ctms_df, c_id_col, c_idx) if c_id_col else ""
+                metrics = site_metrics.get(c_idx, {})
                 table_data.append({
                     "Row": i + 1,
                     "Uploaded Site Name": u_name,
@@ -268,6 +353,8 @@ class SiteListMatchingAgent(BaseAgent):
                     "Match Status": "Matched",
                     "JW Score": match["score"],
                     "Match Step": match["step"],
+                    "Avg Enrolled": metrics.get("avg_enrolled", ""),
+                    "Avg Months Diff": metrics.get("avg_months_diff", ""),
                 })
             else:
                 table_data.append({
@@ -278,11 +365,14 @@ class SiteListMatchingAgent(BaseAgent):
                     "Match Status": "Not matched",
                     "JW Score": "",
                     "Match Step": "",
+                    "Avg Enrolled": "",
+                    "Avg Months Diff": "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
+            "Avg Enrolled", "Avg Months Diff",
         ]
 
         return AgentResult(

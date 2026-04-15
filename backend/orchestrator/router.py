@@ -8,7 +8,7 @@ from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent
 from backend.agents.protocol_analysis_agent import ProtocolAnalysisAgent
 from backend.agents.reforecasting_agent import ReforecastingAgent
-from backend.agents.site_list_merger_agent import SiteListMatchingAgent, DEFAULT_CTMS_DATASET
+from backend.agents.site_list_merger_agent import CROSiteProfilingAgent, DEFAULT_CTMS_DATASET
 from backend.agents.trial_benchmarking_agent import TrialBenchmarkingAgent, DEFAULT_DATASET
 from backend.llm.llm_client import LLMClient
 from backend.llm.web_search import WebSearchClient
@@ -27,7 +27,7 @@ class Router:
             (config or {}).get("data_sources", {}).get("reforecast_dataset", "REFORECAST")
         )
         self._registry: dict[str, BaseAgent] = {
-            "site_list_matching":   SiteListMatchingAgent(llm_client, dataset_name=ctms_dataset),
+            "cro_site_profiling":   CROSiteProfilingAgent(llm_client, dataset_name=ctms_dataset),
             "trial_benchmarking":   TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset,
                                                            web_search=web_search),
             "drug_reimbursement":   DrugReimbursementAgent(llm_client, web_search=web_search),

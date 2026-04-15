@@ -102,8 +102,8 @@ class Orchestrator:
                     f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
                 )
                 state.add_message("assistant", msg)
-                if state.active_skill is None or state.active_skill == "site_list_matching":
-                    state.active_skill = "site_list_matching"
+                if state.active_skill is None or state.active_skill == "cro_site_profiling":
+                    state.active_skill = "cro_site_profiling"
                     state.fsm_state = FSMState.PARAMETER_GATHERING
 
             return self._build_response(message=msg, state=state)
@@ -419,8 +419,9 @@ class Orchestrator:
     def _format_results_summary(self, state: ConversationState) -> str:
         """Short summary of available results for use in planning prompts."""
         SKILL_LABELS = {
-            "site_list_matching": "Site List Matching",
-            "site_list_merger":   "Site List Matching",
+            "cro_site_profiling":  "CRO Site Profiling",
+            "site_list_matching": "CRO Site Profiling",
+            "site_list_merger":   "CRO Site Profiling",
             "trial_benchmarking": "Trial Benchmarking",
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
@@ -580,8 +581,9 @@ class Orchestrator:
     def _format_results_context(self, state: ConversationState) -> str:
         """Serialise all prior SkillResults into a readable text block for the reasoning prompt."""
         SKILL_LABELS = {
-            "site_list_matching": "Site List Matching",
-            "site_list_merger":   "Site List Matching",
+            "cro_site_profiling":  "CRO Site Profiling",
+            "site_list_matching": "CRO Site Profiling",
+            "site_list_merger":   "CRO Site Profiling",
             "trial_benchmarking": "Trial Benchmarking",
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
@@ -629,7 +631,7 @@ class Orchestrator:
     def _parse_skill_selection(self, message: str) -> str | None:
         """Handle numbered skill selection from clarification menu."""
         skill_by_number = {
-            "1": "site_list_matching",
+            "1": "cro_site_profiling",
             "2": "trial_benchmarking",
             "3": "drug_reimbursement",
             "4": "enrollment_forecasting",

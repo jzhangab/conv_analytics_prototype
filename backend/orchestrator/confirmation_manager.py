@@ -9,6 +9,7 @@ from backend.state.parameter_schema import SkillSchema
 _SKILL_VERB = {
     "site_list_merger": "merge the uploaded site lists",
     "site_list_matching": "match the uploaded site list against the CTMS database",
+    "cro_site_profiling": "profile the uploaded CRO site list against the CTMS database",
     "trial_benchmarking": "run Trial Benchmarking",
     "drug_reimbursement": "run Drug Reimbursement Assessment",
     "enrollment_forecasting": "run Enrollment Forecasting",
@@ -61,9 +62,9 @@ def build_confirmation_prompt(
                 formatted = str(value)
             lines.append(f"  - **{spec.label}** *(optional)*: {formatted}")
 
-    # File uploads for site merger
-    if skill_schema.skill_id == "site_list_merger":
-        lines.append("  - CRO and sponsor site list files: uploaded")
+    # File uploads for site profiling / legacy merger
+    if skill_schema.skill_id in ("site_list_merger", "cro_site_profiling"):
+        lines.append("  - CRO site list file: uploaded")
 
     lines.append("\nShould I proceed? Reply **yes** to confirm, **no** to cancel, or **edit** to change a parameter.")
 
