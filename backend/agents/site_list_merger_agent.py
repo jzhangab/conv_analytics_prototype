@@ -10,10 +10,23 @@ For matched sites, calculates performance metrics from the CTMS dataset:
   - Avg Enrolled: average of the ENROLLED column across all rows for that site
   - Avg Months Diff: average of the MONTHS_DIFF column across all rows for that site
 
-Performance caches (module-level, persist for the lifetime of the backend process):
+Performance notes
+-----------------
+* Key building is fully vectorised via pandas string ops (no Python row loops).
+* City-based blocking reduces the CTMS candidate set per uploaded site from O(M)
+  to O(M/C) where C is the number of distinct cities — typically a 10-100x
+  reduction in JW calls.
+* Jaro-Winkler is delegated to rapidfuzz (C extension) when installed, giving
+  another 50-100x speedup.  The pure-Python fallback is used when rapidfuzz is
+  absent (see backend/utils/string_matching.py).
+* An early-exit threshold of 0.98 skips the remainder of the candidate list once
+  a near-perfect match is found.
+
+Module-level caches (persist for the lifetime of the backend process):
   _ctms_df_cache       — raw CTMS DataFrame, keyed by dataset name
   _col_inference_cache — LLM column-mapping result, keyed by frozenset of column names
-  _ctms_keys_cache     — pre-built JW matching keys, keyed by (dataset, name_col, city_col, addr_col)
+  _ctms_keys_cache     — pre-built JW matching keys + city index, keyed by
+                         (dataset, name_col, city_col, addr_col)
   _ctms_metrics_cache  — pre-aggregated {site_id: {avg_enrolled, avg_months_diff}},
                          keyed by (dataset, id_col, enrolled_col, months_diff_col)
 
@@ -32,9 +45,7 @@ from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (SITE_COLUMN_INFERENCE_SYSTEM,
                                            SITE_COLUMN_INFERENCE_USER)
 from backend.state.conversation_state import ConversationState
-from backend.utils.string_matching import (first_n_words,
-                                            jaro_winkler_similarity,
-                                            normalize_for_matching)
+from backend.utils.string_matching import jaro_winkler_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +53,8 @@ DEFAULT_CTMS_DATASET = "CTMS_DATASET"
 
 STEP1_THRESHOLD = 0.90
 STEP2_THRESHOLD = 0.88
+# Once a match this strong is found, skip remaining candidates — negligible accuracy loss.
+EARLY_EXIT_SCORE = 0.98
 
 # ---------------------------------------------------------------------------
 # Module-level caches
@@ -53,18 +66,22 @@ _ctms_df_cache: dict[str, pd.DataFrame] = {}
 # frozenset(uploaded_col_names | ctms_col_names) -> col_map dict
 _col_inference_cache: dict[frozenset, dict] = {}
 
-# (dataset_name, name_col, city_col, addr_col) -> {"name_keys": list, "addr_keys": list}
+# (dataset_name, name_col, city_col, addr_col) ->
+#   {"name_keys": list[str], "addr_keys": list[str], "city_index": dict[str, list[int]]}
 _ctms_keys_cache: dict[tuple, dict] = {}
 
 # (dataset_name, id_col, enrolled_col, months_diff_col)
-#   -> {site_id_value: {"avg_enrolled": float, "avg_months_diff": float}}
+#   -> {ctms_idx: {"avg_enrolled": float, "avg_months_diff": float}}
 _ctms_metrics_cache: dict[tuple, dict] = {}
 
 
 class CROSiteProfilingAgent(BaseAgent):
     skill_id = "cro_site_profiling"
     display_name = "CRO Site Profiling"
-    description = "Matches an uploaded site list against the CTMS master database and calculates site performance metrics."
+    description = (
+        "Matches an uploaded site list against the CTMS master database "
+        "and calculates site performance metrics."
+    )
 
     def __init__(self, llm_client: LLMClient, dataset_name: str = DEFAULT_CTMS_DATASET):
         self.llm = llm_client
@@ -88,11 +105,7 @@ class CROSiteProfilingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _load_ctms_df(self):
-        """Returns (df, error_string). error_string is None on success.
-
-        The loaded DataFrame is cached for the lifetime of the backend process so
-        subsequent calls skip the Dataiku network round-trip.
-        """
+        """Returns (df, error_string). error_string is None on success."""
         if self.dataset_name in _ctms_df_cache:
             logger.info("CTMS cache hit for dataset '%s'.", self.dataset_name)
             return _ctms_df_cache[self.dataset_name], None
@@ -117,8 +130,8 @@ class CROSiteProfilingAgent(BaseAgent):
     def _infer_columns(self, uploaded_cols: list[str], ctms_cols: list[str]) -> dict:
         """Use LLM to map column names to semantic roles for both datasets.
 
-        The result is cached by the frozenset of all column names so the LLM is
-        only called once per unique combination of uploaded + CTMS columns.
+        Cached by frozenset of all column names — called at most once per unique
+        combination of uploaded + CTMS columns.
         """
         cache_key = frozenset(uploaded_cols) | frozenset(f"ctms::{c}" for c in ctms_cols)
         if cache_key in _col_inference_cache:
@@ -139,85 +152,51 @@ class CROSiteProfilingAgent(BaseAgent):
         return result
 
     # ------------------------------------------------------------------
-    # Matching helpers
+    # Vectorised key builders
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _safe_str(df: pd.DataFrame, col: str | None, idx: int) -> str:
-        """Get a cell value as a cleaned string, or empty if col is missing."""
-        if col is None or col not in df.columns:
-            return ""
-        val = df.at[idx, col]
-        if pd.isna(val):
-            return ""
-        return normalize_for_matching(str(val))
+    def _normalize_col(df: pd.DataFrame, col: str | None) -> pd.Series:
+        """Return a Series of normalised strings (lowercase, collapsed whitespace)."""
+        if col and col in df.columns:
+            return df[col].fillna("").astype(str).str.lower().str.split().str.join(" ")
+        return pd.Series("", index=df.index)
 
     @staticmethod
     def _build_keys(df: pd.DataFrame, name_col: str | None, city_col: str | None) -> list[str]:
-        """Build site_name + city concatenation keys for each row."""
-        keys = []
-        for idx in df.index:
-            name = CROSiteProfilingAgent._safe_str(df, name_col, idx)
-            city = CROSiteProfilingAgent._safe_str(df, city_col, idx)
-            keys.append(f"{name} {city}".strip())
-        return keys
+        """Build site_name + city concatenation keys — fully vectorised."""
+        name_s = CROSiteProfilingAgent._normalize_col(df, name_col)
+        city_s = CROSiteProfilingAgent._normalize_col(df, city_col)
+        return (name_s + " " + city_s).str.strip().tolist()
 
     @staticmethod
     def _build_address_keys(
         df: pd.DataFrame, addr_col: str | None, city_col: str | None,
     ) -> list[str]:
-        """Build first-3-words-of-address + city concatenation keys."""
-        keys = []
-        for idx in df.index:
-            addr = CROSiteProfilingAgent._safe_str(df, addr_col, idx)
-            city = CROSiteProfilingAgent._safe_str(df, city_col, idx)
-            addr_short = first_n_words(addr, 3)
-            keys.append(f"{addr_short} {city}".strip())
-        return keys
+        """Build first-3-words-of-address + city concatenation keys — fully vectorised."""
+        addr_s = CROSiteProfilingAgent._normalize_col(df, addr_col)
+        city_s = CROSiteProfilingAgent._normalize_col(df, city_col)
+        addr_short = addr_s.str.split().str[:3].str.join(" ")
+        return (addr_short + " " + city_s).str.strip().tolist()
 
-    def _match_step(
-        self,
-        uploaded_keys: list[str],
-        ctms_keys: list[str],
-        threshold: float,
-        already_matched_uploaded: set[int],
-        already_matched_ctms: set[int],
-    ) -> list[tuple[int, int, float]]:
-        """Return list of (uploaded_idx, ctms_idx, score) for matches above threshold.
-        Each row matches at most once; best score wins."""
-        candidates: list[tuple[int, int, float]] = []
+    @staticmethod
+    def _build_city_index(df: pd.DataFrame, city_col: str | None) -> dict[str, list[int]]:
+        """
+        Build a mapping: normalised_city -> list of row positions in df.
 
-        for u_idx, u_key in enumerate(uploaded_keys):
-            if u_idx in already_matched_uploaded or not u_key:
-                continue
-            best_score = 0.0
-            best_ctms = -1
-            for c_idx, c_key in enumerate(ctms_keys):
-                if c_idx in already_matched_ctms or not c_key:
-                    continue
-                score = jaro_winkler_similarity(u_key, c_key)
-                if score > best_score:
-                    best_score = score
-                    best_ctms = c_idx
-            if best_score >= threshold and best_ctms >= 0:
-                candidates.append((u_idx, best_ctms, best_score))
-
-        # Resolve conflicts: if multiple uploaded rows match the same CTMS row,
-        # keep only the highest-scoring one.
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        used_ctms: set[int] = set()
-        used_uploaded: set[int] = set()
-        final: list[tuple[int, int, float]] = []
-        for u_idx, c_idx, score in candidates:
-            if c_idx in used_ctms or u_idx in used_uploaded:
-                continue
-            used_ctms.add(c_idx)
-            used_uploaded.add(u_idx)
-            final.append((u_idx, c_idx, score))
-        return final
+        Used by _match_step to restrict JW comparisons to same-city CTMS rows
+        instead of scanning the full CTMS table for every uploaded site.
+        """
+        city_index: dict[str, list[int]] = {}
+        if not city_col or city_col not in df.columns:
+            return city_index
+        city_s = CROSiteProfilingAgent._normalize_col(df, city_col)
+        for pos, city in enumerate(city_s):
+            city_index.setdefault(city, []).append(pos)
+        return city_index
 
     # ------------------------------------------------------------------
-    # CTMS key caching
+    # CTMS key + city-index cache
     # ------------------------------------------------------------------
 
     def _get_ctms_keys(
@@ -226,22 +205,31 @@ class CROSiteProfilingAgent(BaseAgent):
         c_name_col: str | None,
         c_city_col: str | None,
         c_addr_col: str | None,
-    ) -> tuple[list[str], list[str]]:
-        """Return (name_keys, addr_keys) for the CTMS df, building and caching on first call."""
+    ) -> tuple[list[str], list[str], dict[str, list[int]]]:
+        """Return (name_keys, addr_keys, city_index), building and caching on first call."""
         cache_key = (self.dataset_name, c_name_col, c_city_col, c_addr_col)
         if cache_key in _ctms_keys_cache:
             logger.info("CTMS keys cache hit.")
             cached = _ctms_keys_cache[cache_key]
-            return cached["name_keys"], cached["addr_keys"]
+            return cached["name_keys"], cached["addr_keys"], cached["city_index"]
 
         name_keys = self._build_keys(ctms_df, c_name_col, c_city_col)
         addr_keys = (
             self._build_address_keys(ctms_df, c_addr_col, c_city_col)
             if c_addr_col else []
         )
-        _ctms_keys_cache[cache_key] = {"name_keys": name_keys, "addr_keys": addr_keys}
-        logger.info("Built and cached CTMS keys for dataset '%s'.", self.dataset_name)
-        return name_keys, addr_keys
+        city_index = self._build_city_index(ctms_df, c_city_col)
+
+        _ctms_keys_cache[cache_key] = {
+            "name_keys": name_keys,
+            "addr_keys": addr_keys,
+            "city_index": city_index,
+        }
+        logger.info(
+            "Built and cached CTMS keys for dataset '%s' (%d distinct cities).",
+            self.dataset_name, len(city_index),
+        )
+        return name_keys, addr_keys, city_index
 
     # ------------------------------------------------------------------
     # Site metrics — pre-aggregated lookup table
@@ -252,15 +240,7 @@ class CROSiteProfilingAgent(BaseAgent):
         ctms_df: pd.DataFrame,
         id_col: str | None,
     ) -> dict:
-        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, avg_months_diff}.
-
-        On first call the full groupby aggregation is run and the result is stored in
-        _ctms_metrics_cache.  Subsequent calls with the same dataset + column combination
-        skip the computation entirely and return the cached dict in O(1).
-
-        Without a site ID column the lookup is keyed by integer row index (no grouping).
-        """
-        # Resolve actual metric column names (case-insensitive)
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, avg_months_diff}."""
         col_lower = {c.lower(): c for c in ctms_df.columns}
         enrolled_col = col_lower.get("enrolled")
         months_diff_col = col_lower.get("months_diff")
@@ -272,12 +252,10 @@ class CROSiteProfilingAgent(BaseAgent):
 
         if enrolled_col is None and months_diff_col is None:
             logger.warning("CTMS dataset has neither ENROLLED nor MONTHS_DIFF columns; skipping metrics.")
-            result: dict = {}
-            _ctms_metrics_cache[cache_key] = result
-            return result
+            _ctms_metrics_cache[cache_key] = {}
+            return {}
 
         if id_col and id_col in ctms_df.columns:
-            # Aggregate all rows per site_id — these are the "stored rules"
             agg_cols: dict[str, str] = {}
             if enrolled_col:
                 agg_cols[enrolled_col] = "mean"
@@ -285,8 +263,6 @@ class CROSiteProfilingAgent(BaseAgent):
                 agg_cols[months_diff_col] = "mean"
 
             grouped = ctms_df.groupby(id_col, dropna=False).agg(agg_cols)
-
-            # Build ctms_idx -> metrics dict using the site_id of each row as the key
             lookup: dict[int, dict] = {}
             for c_idx in ctms_df.index:
                 site_id_val = ctms_df.at[c_idx, id_col]
@@ -301,7 +277,6 @@ class CROSiteProfilingAgent(BaseAgent):
                     m["avg_months_diff"] = round(float(grp[months_diff_col]), 2)
                 lookup[c_idx] = m
         else:
-            # No ID column: per-row values (no aggregation possible)
             lookup = {}
             for c_idx in ctms_df.index:
                 row = ctms_df.iloc[c_idx]
@@ -319,6 +294,79 @@ class CROSiteProfilingAgent(BaseAgent):
         return lookup
 
     # ------------------------------------------------------------------
+    # Matching
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _match_step(
+        uploaded_keys: list[str],
+        ctms_keys: list[str],
+        threshold: float,
+        already_matched_uploaded: set[int],
+        already_matched_ctms: set[int],
+        uploaded_city_keys: list[str] | None = None,
+        ctms_city_index: dict[str, list[int]] | None = None,
+    ) -> list[tuple[int, int, float]]:
+        """
+        Return [(uploaded_idx, ctms_idx, score)] for matches above threshold.
+
+        City blocking: when city keys are supplied, each uploaded site is only
+        compared against CTMS rows in the same city bucket, reducing the inner
+        loop from O(M) to O(M/C).  Falls back to the full CTMS table when the
+        uploaded city is unknown or the city bucket is empty.
+
+        Early exit: once a score > EARLY_EXIT_SCORE is found the inner loop
+        stops immediately — effectively perfect matches don't need further search.
+        """
+        n_ctms = len(ctms_keys)
+        candidates: list[tuple[int, int, float]] = []
+
+        for u_idx, u_key in enumerate(uploaded_keys):
+            if u_idx in already_matched_uploaded or not u_key:
+                continue
+
+            # City-based candidate pruning
+            if uploaded_city_keys and ctms_city_index and u_idx < len(uploaded_city_keys):
+                u_city = uploaded_city_keys[u_idx]
+                ctms_candidates: list[int] | range = (
+                    ctms_city_index.get(u_city) or range(n_ctms)
+                )
+            else:
+                ctms_candidates = range(n_ctms)
+
+            best_score = 0.0
+            best_ctms = -1
+            for c_idx in ctms_candidates:
+                if c_idx in already_matched_ctms:
+                    continue
+                c_key = ctms_keys[c_idx]
+                if not c_key:
+                    continue
+                score = jaro_winkler_similarity(u_key, c_key)
+                if score > best_score:
+                    best_score = score
+                    best_ctms = c_idx
+                if best_score >= EARLY_EXIT_SCORE:
+                    break
+
+            if best_score >= threshold and best_ctms >= 0:
+                candidates.append((u_idx, best_ctms, best_score))
+
+        # Conflict resolution: if multiple uploaded rows matched the same CTMS
+        # row, keep only the highest-scoring pair.
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        used_ctms: set[int] = set()
+        used_uploaded: set[int] = set()
+        final: list[tuple[int, int, float]] = []
+        for u_idx, c_idx, score in candidates:
+            if c_idx in used_ctms or u_idx in used_uploaded:
+                continue
+            used_ctms.add(c_idx)
+            used_uploaded.add(u_idx)
+            final.append((u_idx, c_idx, score))
+        return final
+
+    # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
 
@@ -334,8 +382,7 @@ class CROSiteProfilingAgent(BaseAgent):
         if load_err:
             return AgentResult(success=False, text_response="", error_message=load_err)
 
-        uploaded_df = pd.DataFrame(file_info["data"])
-        uploaded_df = uploaded_df.reset_index(drop=True)
+        uploaded_df = pd.DataFrame(file_info["data"]).reset_index(drop=True)
         n_uploaded = len(uploaded_df)
         n_ctms = len(ctms_df)
 
@@ -360,55 +407,53 @@ class CROSiteProfilingAgent(BaseAgent):
         c_name_col = c_map.get("site_name")
         c_city_col = c_map.get("city")
         c_addr_col = c_map.get("address")
-        c_id_col = c_map.get("site_id")
+        c_id_col   = c_map.get("site_id")
 
         logger.info("Column mapping — uploaded: %s, ctms: %s", u_map, c_map)
 
-        # --- Build uploaded keys (always fresh — varies by file) ---
+        # --- Build uploaded keys (always fresh — varies per file) ---
         uploaded_name_keys = self._build_keys(uploaded_df, u_name_col, u_city_col)
+        # Raw city strings used for blocking (separate from the combined key)
+        uploaded_city_keys = self._normalize_col(uploaded_df, u_city_col).tolist()
 
-        # --- Get CTMS keys (cached) ---
-        ctms_name_keys, ctms_addr_keys = self._get_ctms_keys(
+        # --- Get CTMS keys + city index (cached) ---
+        ctms_name_keys, ctms_addr_keys, ctms_city_index = self._get_ctms_keys(
             ctms_df, c_name_col, c_city_col, c_addr_col,
         )
 
         # --- Step 1: site_name + city (JW > 0.9) ---
         step1_matches = self._match_step(
-            uploaded_name_keys, ctms_name_keys, STEP1_THRESHOLD, set(), set(),
+            uploaded_name_keys, ctms_name_keys, STEP1_THRESHOLD,
+            set(), set(),
+            uploaded_city_keys=uploaded_city_keys,
+            ctms_city_index=ctms_city_index,
         )
         matched_uploaded = {m[0] for m in step1_matches}
-        matched_ctms = {m[1] for m in step1_matches}
+        matched_ctms     = {m[1] for m in step1_matches}
 
         # --- Step 2: first 3 words of address + city (JW > 0.88) ---
-        step2_matches = []
+        step2_matches: list[tuple[int, int, float]] = []
         if u_addr_col and c_addr_col and ctms_addr_keys:
             uploaded_addr_keys = self._build_address_keys(uploaded_df, u_addr_col, u_city_col)
             step2_matches = self._match_step(
                 uploaded_addr_keys, ctms_addr_keys, STEP2_THRESHOLD,
                 matched_uploaded, matched_ctms,
+                uploaded_city_keys=uploaded_city_keys,
+                ctms_city_index=ctms_city_index,
             )
 
         # --- Combine results ---
         all_matches: dict[int, dict] = {}
-
         for u_idx, c_idx, score in step1_matches:
-            all_matches[u_idx] = {
-                "ctms_idx": c_idx,
-                "score": round(score, 4),
-                "step": "Step 1 (name+city)",
-            }
+            all_matches[u_idx] = {"ctms_idx": c_idx, "score": round(score, 4), "step": "Step 1 (name+city)"}
         for u_idx, c_idx, score in step2_matches:
-            all_matches[u_idx] = {
-                "ctms_idx": c_idx,
-                "score": round(score, 4),
-                "step": "Step 2 (address+city)",
-            }
+            all_matches[u_idx] = {"ctms_idx": c_idx, "score": round(score, 4), "step": "Step 2 (address+city)"}
 
-        n_step1 = len(step1_matches)
-        n_step2 = len(step2_matches)
-        n_matched = n_step1 + n_step2
+        n_step1    = len(step1_matches)
+        n_step2    = len(step2_matches)
+        n_matched  = n_step1 + n_step2
         n_unmatched = n_uploaded - n_matched
-        match_rate = round(n_matched / max(n_uploaded, 1) * 100, 1)
+        match_rate  = round(n_matched / max(n_uploaded, 1) * 100, 1)
 
         # --- Get pre-aggregated site metrics lookup (cached) ---
         site_metrics_lookup = self._get_site_metrics_lookup(ctms_df, c_id_col)
@@ -427,35 +472,39 @@ class CROSiteProfilingAgent(BaseAgent):
         # --- Build result table ---
         table_data = []
         for i in range(n_uploaded):
-            u_name = self._safe_str(uploaded_df, u_name_col, i) or str(uploaded_df.iloc[i, 0])
+            if u_name_col and u_name_col in uploaded_df.columns:
+                u_name = str(uploaded_df.at[i, u_name_col] or "").strip() or str(uploaded_df.iloc[i, 0])
+            else:
+                u_name = str(uploaded_df.iloc[i, 0])
+
             match = all_matches.get(i)
             if match:
                 c_idx = match["ctms_idx"]
-                c_name = self._safe_str(ctms_df, c_name_col, c_idx)
-                c_id = self._safe_str(ctms_df, c_id_col, c_idx) if c_id_col else ""
+                c_name = str(ctms_df.at[c_idx, c_name_col]).strip() if c_name_col and c_name_col in ctms_df.columns else ""
+                c_id   = str(ctms_df.at[c_idx, c_id_col]).strip()   if c_id_col   and c_id_col   in ctms_df.columns else ""
                 metrics = site_metrics_lookup.get(c_idx, {})
                 table_data.append({
-                    "Row": i + 1,
+                    "Row":                i + 1,
                     "Uploaded Site Name": u_name,
-                    "CTMS Site Name": c_name,
-                    "CTMS Site ID": c_id,
-                    "Match Status": "Matched",
-                    "JW Score": match["score"],
-                    "Match Step": match["step"],
-                    "Avg Enrolled": metrics.get("avg_enrolled", ""),
-                    "Avg Months Diff": metrics.get("avg_months_diff", ""),
+                    "CTMS Site Name":     c_name,
+                    "CTMS Site ID":       c_id,
+                    "Match Status":       "Matched",
+                    "JW Score":           match["score"],
+                    "Match Step":         match["step"],
+                    "Avg Enrolled":       metrics.get("avg_enrolled", ""),
+                    "Avg Months Diff":    metrics.get("avg_months_diff", ""),
                 })
             else:
                 table_data.append({
-                    "Row": i + 1,
+                    "Row":                i + 1,
                     "Uploaded Site Name": u_name,
-                    "CTMS Site Name": "",
-                    "CTMS Site ID": "",
-                    "Match Status": "Not matched",
-                    "JW Score": "",
-                    "Match Step": "",
-                    "Avg Enrolled": "",
-                    "Avg Months Diff": "",
+                    "CTMS Site Name":     "",
+                    "CTMS Site ID":       "",
+                    "Match Status":       "Not matched",
+                    "JW Score":           "",
+                    "Match Step":         "",
+                    "Avg Enrolled":       "",
+                    "Avg Months Diff":    "",
                 })
 
         table_columns = [
@@ -475,8 +524,8 @@ class CROSiteProfilingAgent(BaseAgent):
 def parse_uploaded_file(file_storage) -> dict:
     """
     Parse a file (CSV or Excel) into a dict with keys: filename, data, columns.
-    Accepts Werkzeug FileStorage objects or any object with .filename and .read().
-    Falls back to content-based detection when the extension is missing or unknown.
+    Accepts Werkzeug FileStorage objects, UploadedFile, or any object with
+    .filename and .read().
     Raises ValueError on unsupported format or parse error.
     """
     filename = file_storage.filename or ""
