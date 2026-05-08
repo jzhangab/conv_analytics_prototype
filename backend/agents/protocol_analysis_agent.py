@@ -1,22 +1,20 @@
 """
-Protocol Analysis SubAgent.
+Protocol Analysis SubAgent — TOC-based section extraction.
 
-Workflow for short documents (≤ SINGLE_CALL_CHARS):
-  1. Extract full text from the uploaded file (PDF / DOCX / TXT)
-  2. Send the full text to the analysis LLM in a single call
+Workflow:
+  1. Scan the first TOC_SCAN_PAGES pages (PDF) or TOC_SCAN_CHARS chars (DOCX/TXT)
+     and call the LLM to locate the Table of Contents and map each analysis
+     dimension to a section title and start page.
+  2. For each dimension, extract only the pages (PDF) or text span (DOCX/TXT)
+     belonging to that section — no more, no less.
+  3. Call a dimension-specific expert LLM on each section independently.
+     Each call is a few thousand to tens-of-thousands of tokens — well within limits.
+  4. Synthesize findings: merge all section results programmatically, then make
+     one lightweight LLM call (section assessments only, no protocol text) to
+     produce the executive summary and overall rating.
 
-Workflow for long documents (> SINGLE_CALL_CHARS) — Map-Reduce:
-  Map:    Split into CHUNK_CHARS-sized chunks and extract structured content
-          from each chunk independently (each call well within token limit).
-  Reduce: Concatenate the structured extractions and run the final analysis
-          on the compact, information-dense combined extraction.
-          If the combined extraction still exceeds SYNTHESIS_MAX_CHARS, do
-          a second compression pass before synthesizing.
-
-Token budget (at ~3 chars/token for clinical text):
-  SINGLE_CALL_CHARS = 600_000  →  ~200k tokens  (safe single call)
-  CHUNK_CHARS       = 200_000  →  ~67k tokens   (per extraction call)
-  SYNTHESIS_MAX_CHARS = 650_000 → ~217k tokens  (safe synthesis call)
+Fallback: if no TOC is found, fall back to a single-call analysis on as much
+text as fits within FALLBACK_CHARS.
 """
 from __future__ import annotations
 
@@ -28,19 +26,56 @@ from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (
     PROTOCOL_ANALYSIS_SYSTEM,
     PROTOCOL_ANALYSIS_USER,
-    PROTOCOL_CHUNK_SYSTEM,
-    PROTOCOL_CHUNK_USER,
-    PROTOCOL_SYNTHESIS_USER,
+    PROTOCOL_DESIGN_SYSTEM,
+    PROTOCOL_DESIGN_USER,
+    PROTOCOL_OBJECTIVES_SYSTEM,
+    PROTOCOL_OBJECTIVES_USER,
+    PROTOCOL_OPERATIONAL_SYSTEM,
+    PROTOCOL_OPERATIONAL_USER,
+    PROTOCOL_POPULATION_SYSTEM,
+    PROTOCOL_POPULATION_USER,
+    PROTOCOL_SAFETY_SYSTEM,
+    PROTOCOL_SAFETY_USER,
+    PROTOCOL_SECTION_SYNTHESIS_SYSTEM,
+    PROTOCOL_SECTION_SYNTHESIS_USER,
+    PROTOCOL_STATISTICAL_SYSTEM,
+    PROTOCOL_STATISTICAL_USER,
+    PROTOCOL_TOC_SYSTEM,
+    PROTOCOL_TOC_USER,
 )
 from backend.llm.web_search import WebSearchClient
 from backend.state.conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
-SINGLE_CALL_CHARS   = 600_000   # use single-call path below this threshold
-CHUNK_CHARS         = 200_000   # chars per extraction chunk in the map phase
-SYNTHESIS_MAX_CHARS = 650_000   # max combined extraction for synthesis; compress if larger
+TOC_SCAN_PAGES  = 15         # PDF pages to scan for Table of Contents
+TOC_SCAN_CHARS  = 30_000     # chars to scan for TOC in DOCX/TXT
+MAX_SECTION_CHARS = 500_000  # hard cap per section analysis call (~167k tokens at 3 ch/tok)
+FALLBACK_CHARS  = 600_000    # max chars for single-call fallback analysis
+
 SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "suggestion": 3}
+
+DIMENSION_LABELS = {
+    "objectives_and_endpoints": "Endpoints & Estimands",
+    "trial_design":             "Study Design",
+    "trial_population":         "Eligibility Criteria",
+    "statistical_approach":     "Statistical Approach",
+    "safety_monitoring":        "Safety Monitoring",
+    "operational_feasibility":  "Operational Feasibility",
+}
+
+# Ordered list of dimensions — controls analysis sequence and display order
+ANALYSIS_DIMENSIONS = list(DIMENSION_LABELS.keys())
+
+# Dimension → (system_prompt, user_template) — populated once at module load
+_SECTION_PROMPTS: dict[str, tuple[str, str]] = {
+    "objectives_and_endpoints": (PROTOCOL_OBJECTIVES_SYSTEM,  PROTOCOL_OBJECTIVES_USER),
+    "trial_design":             (PROTOCOL_DESIGN_SYSTEM,       PROTOCOL_DESIGN_USER),
+    "trial_population":         (PROTOCOL_POPULATION_SYSTEM,   PROTOCOL_POPULATION_USER),
+    "statistical_approach":     (PROTOCOL_STATISTICAL_SYSTEM,  PROTOCOL_STATISTICAL_USER),
+    "safety_monitoring":        (PROTOCOL_SAFETY_SYSTEM,       PROTOCOL_SAFETY_USER),
+    "operational_feasibility":  (PROTOCOL_OPERATIONAL_SYSTEM,  PROTOCOL_OPERATIONAL_USER),
+}
 
 
 class ProtocolAnalysisAgent(BaseAgent):
@@ -81,56 +116,391 @@ class ProtocolAnalysisAgent(BaseAgent):
         if fmt is None:
             fmt = "pdf" if "pages" in file_info else "txt"
 
-        self._trace(f"Preparing '{filename}' for analysis (format: {fmt})")
+        self._trace(f"Loaded '{filename}' (format: {fmt})")
 
-        # Assemble full text
-        if fmt == "pdf":
-            pages = file_info.get("pages", [])
-            if not pages:
-                return AgentResult(
-                    success=False, text_response="",
-                    error_message="No page text could be extracted from the uploaded PDF.",
-                )
-            full_text = "\n\n".join(p for p in pages if p.strip())
-            self._trace(f"PDF extracted: {len(pages)} pages, {len(full_text):,} chars total.")
-        else:
-            full_text = file_info.get("full_text") or file_info.get("text", "")
-            self._trace(f"Text extracted: {len(full_text):,} chars.")
-
-        if not full_text.strip():
-            return AgentResult(
-                success=False, text_response="",
-                error_message="Could not extract any text from the uploaded file.",
-            )
-
-        # Web search for regulatory context (indication-hint from filename)
+        # Web search for regulatory context
         web_context = ""
         if self.web_search:
-            search_hint = filename.replace("_", " ").rsplit(".", 1)[0]
-            raw = self.web_search.search_for_skill("protocol_analysis", {"indication": search_hint})
+            hint = filename.replace("_", " ").rsplit(".", 1)[0]
+            raw = self.web_search.search_for_skill("protocol_analysis", {"indication": hint})
             if raw:
-                web_context = f"\n\nSupplementary web search results (regulatory guidance):\n{raw}"
+                web_context = f"\n\nSupplementary regulatory guidance from web search:\n{raw}"
                 self._trace("Web search context added.")
 
-        # Route to single-call or map-reduce based on document length
-        if len(full_text) <= SINGLE_CALL_CHARS:
+        # ── Step 1: Extract TOC ─────────────────────────────────────────
+        toc_input = self._get_toc_input(file_info, fmt)
+        self._trace(
+            f"Scanning first {TOC_SCAN_PAGES} pages (PDF) / {TOC_SCAN_CHARS:,} chars (text) for Table of Contents..."
+        )
+        toc = self._call_toc_llm(toc_input, filename)
+
+        if toc and toc.get("found"):
+            mapped = [
+                dim for dim in ANALYSIS_DIMENSIONS
+                if toc.get("sections", {}).get(dim, {}).get("section_title")
+            ]
             self._trace(
-                f"Document fits in single call ({len(full_text):,} / {SINGLE_CALL_CHARS:,} chars). "
-                "Running direct analysis."
+                f"TOC found. Mapped {len(mapped)}/{len(ANALYSIS_DIMENSIONS)} analysis dimensions: "
+                + ", ".join(mapped)
             )
-            return self._run_single_call(full_text + web_context, filename)
+            return self._run_toc_analysis(file_info, fmt, toc, filename, web_context)
         else:
             self._trace(
-                f"Document too long for single call ({len(full_text):,} chars > {SINGLE_CALL_CHARS:,}). "
-                "Switching to map-reduce analysis."
+                "No Table of Contents found in first pages. "
+                "Falling back to full-text single-call analysis."
             )
-            return self._run_chunked_analysis(full_text, web_context, filename)
+            full_text = self._assemble_full_text(file_info, fmt)
+            if len(full_text) > FALLBACK_CHARS:
+                self._trace(
+                    f"Document truncated to {FALLBACK_CHARS:,} chars for fallback analysis "
+                    f"(was {len(full_text):,} chars)."
+                )
+                full_text = full_text[:FALLBACK_CHARS]
+            return self._run_single_call(full_text + web_context, filename)
 
     # ------------------------------------------------------------------
-    # Single-call path (short documents)
+    # TOC extraction
+    # ------------------------------------------------------------------
+
+    def _get_toc_input(self, file_info: dict, fmt: str) -> str:
+        """Return the text to send to the TOC LLM (first pages / chars)."""
+        if fmt == "pdf":
+            pages = file_info.get("pages", [])
+            toc_pages = pages[:TOC_SCAN_PAGES]
+            return "\n\n--- Page Break ---\n\n".join(
+                f"[PDF page {i + 1}]\n{p}" for i, p in enumerate(toc_pages) if p.strip()
+            )
+        else:
+            full_text = file_info.get("full_text") or file_info.get("text", "")
+            return full_text[:TOC_SCAN_CHARS]
+
+    def _call_toc_llm(self, toc_input: str, filename: str) -> dict | None:
+        messages = [
+            {"role": "system", "content": PROTOCOL_TOC_SYSTEM},
+            {"role": "user",   "content": PROTOCOL_TOC_USER.format(toc_pages_text=toc_input)},
+        ]
+        try:
+            result = self.llm.complete_json(messages, temperature=self.llm.temp_deterministic)
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            logger.warning("TOC LLM call failed: %s", e)
+            return None
+
+    # ------------------------------------------------------------------
+    # TOC-based analysis (main path)
+    # ------------------------------------------------------------------
+
+    def _run_toc_analysis(
+        self, file_info: dict, fmt: str, toc: dict, filename: str, web_context: str
+    ) -> AgentResult:
+        sections_map = toc.get("sections", {})
+        section_results: dict[str, dict] = {}
+
+        for dimension in ANALYSIS_DIMENSIONS:
+            section_info = sections_map.get(dimension) or {}
+            section_title = section_info.get("section_title")
+
+            if not section_title:
+                self._trace(f"  [{dimension}] Not mapped in TOC — skipping.")
+                continue
+
+            # Extract the section text for this dimension
+            if fmt == "pdf":
+                section_text = self._extract_section_pages(
+                    file_info["pages"], toc, dimension
+                )
+            else:
+                full_text = file_info.get("full_text") or file_info.get("text", "")
+                section_text = self._extract_section_from_text(full_text, toc, dimension)
+
+            if not section_text:
+                self._trace(
+                    f"  [{dimension}] Could not extract text for '{section_title}' — skipping."
+                )
+                continue
+
+            self._trace(
+                f"  [{dimension}] Analyzing '{section_title}' "
+                f"({len(section_text):,} chars)..."
+            )
+            result = self._analyze_section(section_text, dimension, section_title, filename)
+            if result:
+                n = len(result.get("findings", []))
+                self._trace(f"  [{dimension}] → {n} finding(s).")
+                section_results[dimension] = result
+            else:
+                self._trace(f"  [{dimension}] Analysis call failed — skipping.")
+
+        if not section_results:
+            self._trace(
+                "No sections could be extracted or analyzed. "
+                "Falling back to full-text single-call analysis."
+            )
+            full_text = self._assemble_full_text(file_info, fmt)
+            return self._run_single_call(full_text[:FALLBACK_CHARS] + web_context, filename)
+
+        return self._format_from_sections(section_results, filename)
+
+    # ------------------------------------------------------------------
+    # Section extraction — PDF (page-list based)
+    # ------------------------------------------------------------------
+
+    def _extract_section_pages(
+        self, pages: list[str], toc: dict, dimension: str
+    ) -> str | None:
+        section_info = (toc.get("sections") or {}).get(dimension) or {}
+        start_page = section_info.get("protocol_page")
+        if not start_page:
+            return None
+
+        page_offset = toc.get("page_offset", 0)
+        all_sections_sorted = sorted(
+            [s for s in toc.get("all_sections", []) if s.get("protocol_page")],
+            key=lambda s: s["protocol_page"],
+        )
+
+        # End page = next section start in the full TOC (after our section's start)
+        end_page = None
+        for s in all_sections_sorted:
+            if s["protocol_page"] > start_page:
+                end_page = s["protocol_page"]
+                break
+
+        start_idx = max(0, (start_page - 1) + page_offset)
+        end_idx   = min(
+            len(pages),
+            ((end_page - 1) + page_offset) if end_page is not None else len(pages),
+        )
+
+        if start_idx >= len(pages):
+            self._trace(
+                f"    Page index {start_idx} out of range "
+                f"(PDF has {len(pages)} pages, offset={page_offset}). "
+                "Trying without offset."
+            )
+            start_idx = max(0, start_page - 1)
+            end_idx   = min(len(pages), (end_page - 1) if end_page else len(pages))
+
+        section_pages = [p for p in pages[start_idx:end_idx] if p.strip()]
+        if not section_pages:
+            return None
+
+        text = "\n\n".join(section_pages)
+        if len(text) > MAX_SECTION_CHARS:
+            text = text[:MAX_SECTION_CHARS]
+            self._trace(f"    Truncated to {MAX_SECTION_CHARS:,} chars.")
+        return text
+
+    # ------------------------------------------------------------------
+    # Section extraction — DOCX/TXT (heading-search based)
+    # ------------------------------------------------------------------
+
+    def _extract_section_from_text(
+        self, full_text: str, toc: dict, dimension: str
+    ) -> str | None:
+        section_info = (toc.get("sections") or {}).get(dimension) or {}
+        title = section_info.get("section_title", "")
+        if not title:
+            return None
+
+        start_pos = self._find_heading_in_text(full_text, title)
+        if start_pos < 0:
+            return None
+
+        # Find end: next section title that appears after our section starts
+        all_sections_sorted = sorted(
+            [s for s in toc.get("all_sections", []) if s.get("title") and s.get("protocol_page")],
+            key=lambda s: s["protocol_page"],
+        )
+        my_page = section_info.get("protocol_page", 0)
+
+        end_pos = len(full_text)
+        for s in all_sections_sorted:
+            if s["protocol_page"] <= my_page:
+                continue
+            candidate = self._find_heading_in_text(full_text, s["title"], after=start_pos + len(title))
+            if candidate > start_pos:
+                end_pos = candidate
+                break
+
+        text = full_text[start_pos:end_pos]
+        if len(text) > MAX_SECTION_CHARS:
+            text = text[:MAX_SECTION_CHARS]
+        return text if text.strip() else None
+
+    @staticmethod
+    def _find_heading_in_text(text: str, heading: str, after: int = 0) -> int:
+        """
+        Case-insensitive search for `heading` near a line boundary.
+        Accepts up to 20 characters of prefix on the line (e.g., "3.2 " or "Section ").
+        """
+        lower_text    = text.lower()
+        lower_heading = heading.lower().strip()
+        pos = after
+        while pos < len(text):
+            idx = lower_text.find(lower_heading, pos)
+            if idx < 0:
+                return -1
+            line_start = text.rfind("\n", 0, idx) + 1
+            if idx - line_start <= 20:
+                return idx
+            pos = idx + 1
+        return -1
+
+    # ------------------------------------------------------------------
+    # Section analysis (one call per dimension)
+    # ------------------------------------------------------------------
+
+    def _analyze_section(
+        self, section_text: str, dimension: str, section_title: str, filename: str
+    ) -> dict | None:
+        system_prompt, user_template = _SECTION_PROMPTS.get(dimension, (None, None))
+        if not system_prompt:
+            return None
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_template.format(
+                filename=filename,
+                section_label=section_title,
+                section_text=section_text,
+            )},
+        ]
+        try:
+            return self.llm.complete_json(messages, temperature=self.llm.temp_agents)
+        except Exception as e:
+            logger.warning("Section analysis failed for %s: %s", dimension, e)
+            return None
+
+    # ------------------------------------------------------------------
+    # Synthesis: merge section results → AgentResult
+    # ------------------------------------------------------------------
+
+    def _format_from_sections(
+        self, section_results: dict[str, dict], filename: str
+    ) -> AgentResult:
+        all_findings: list[dict] = []
+        all_strengths: list[str] = []
+        section_assessments: dict[str, str] = {}
+        severity_counts: dict[str, int] = {"critical": 0, "major": 0, "minor": 0, "suggestion": 0}
+
+        for dimension in ANALYSIS_DIMENSIONS:
+            result = section_results.get(dimension)
+            if not result:
+                continue
+
+            category  = DIMENSION_LABELS.get(dimension, dimension.replace("_", " ").title())
+            assessment = result.get("assessment", "")
+            if assessment:
+                section_assessments[dimension] = assessment
+
+            for strength in result.get("strengths", []):
+                all_strengths.append(strength)
+
+            for f in result.get("findings", []):
+                sev = f.get("severity", "suggestion")
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+                all_findings.append({
+                    "category":       category,
+                    "finding":        f.get("finding", ""),
+                    "severity":       sev,
+                    "recommendation": f.get("recommendation", ""),
+                })
+
+        all_findings.sort(key=lambda f: SEVERITY_ORDER.get(f["severity"], 3))
+        critical_concerns = [f["finding"] for f in all_findings if f["severity"] == "critical"]
+
+        exec_summary, overall_rating = self._synthesize_summary(
+            section_assessments, severity_counts, filename
+        )
+
+        # Build text response
+        lines = [
+            f"## Protocol Analysis: {filename}",
+            f"**Overall Rating:** {overall_rating.replace('_', ' ').title()}",
+            "",
+            "### Executive Summary",
+            exec_summary,
+        ]
+        if all_strengths:
+            lines += ["", "### Strengths", *[f"- {s}" for s in all_strengths[:6]]]
+        if critical_concerns:
+            lines += ["", "### Critical Concerns", *[f"- {c}" for c in critical_concerns]]
+        if section_assessments:
+            lines += ["", "### Section Assessments"]
+            for dim, assessment in section_assessments.items():
+                label = DIMENSION_LABELS.get(dim, dim.replace("_", " ").title())
+                lines.append(f"**{label}:** {assessment}")
+
+        table_data = [
+            {
+                "#":              i + 1,
+                "Section":        f["category"],
+                "Finding":        f["finding"],
+                "Severity":       f["severity"].title(),
+                "Recommendation": f["recommendation"],
+            }
+            for i, f in enumerate(all_findings)
+        ]
+        return AgentResult(
+            success=True,
+            text_response="\n".join(lines),
+            table_data=table_data or None,
+            table_columns=(
+                ["#", "Section", "Finding", "Severity", "Recommendation"]
+                if table_data else None
+            ),
+        )
+
+    def _synthesize_summary(
+        self,
+        section_assessments: dict[str, str],
+        severity_counts: dict[str, int],
+        filename: str,
+    ) -> tuple[str, str]:
+        """
+        One-shot lightweight LLM call: sends only section summaries (not protocol text)
+        to produce executive_summary and overall_rating.
+        """
+        assessments_text = "\n".join(
+            f"- {DIMENSION_LABELS.get(dim, dim)}: {assessment}"
+            for dim, assessment in section_assessments.items()
+        )
+        counts_text = ", ".join(
+            f"{sev}: {cnt}" for sev, cnt in severity_counts.items() if cnt > 0
+        )
+        messages = [
+            {"role": "system", "content": PROTOCOL_SECTION_SYNTHESIS_SYSTEM},
+            {"role": "user",   "content": PROTOCOL_SECTION_SYNTHESIS_USER.format(
+                filename=filename,
+                section_assessments=assessments_text,
+                severity_counts=counts_text,
+            )},
+        ]
+        try:
+            result = self.llm.complete_json(messages, temperature=self.llm.temp_agents)
+            return (
+                result.get("executive_summary", "Protocol review completed."),
+                result.get("overall_rating", "adequate"),
+            )
+        except Exception as e:
+            logger.warning("Summary synthesis failed: %s", e)
+            # Deterministic fallback from severity counts
+            if severity_counts.get("critical", 0) > 0:
+                rating = "significant_concerns"
+            elif severity_counts.get("major", 0) >= 3:
+                rating = "needs_improvement"
+            elif severity_counts.get("major", 0) >= 1:
+                rating = "adequate"
+            else:
+                rating = "strong"
+            return "Protocol review completed.", rating
+
+    # ------------------------------------------------------------------
+    # Single-call fallback (short documents or no TOC found)
     # ------------------------------------------------------------------
 
     def _run_single_call(self, protocol_text: str, filename: str) -> AgentResult:
+        self._trace(f"Running single-call analysis ({len(protocol_text):,} chars)...")
         messages = [
             {"role": "system", "content": PROTOCOL_ANALYSIS_SYSTEM},
             {"role": "user",   "content": PROTOCOL_ANALYSIS_USER.format(
@@ -149,159 +519,18 @@ class ProtocolAnalysisAgent(BaseAgent):
         return self._format_result(data, filename)
 
     # ------------------------------------------------------------------
-    # Map-Reduce path (long documents)
-    # ------------------------------------------------------------------
-
-    def _run_chunked_analysis(
-        self, full_text: str, web_context: str, filename: str
-    ) -> AgentResult:
-        # ── Map: extract each chunk ──────────────────────────────────────
-        chunks = self._split_into_chunks(full_text, CHUNK_CHARS)
-        self._trace(
-            f"Split into {len(chunks)} chunk(s) of ~{CHUNK_CHARS:,} chars each. "
-            "Running extraction pass (Map phase)..."
-        )
-
-        extractions: list[str] = []
-        for i, chunk in enumerate(chunks):
-            extraction = self._extract_chunk(chunk, i + 1, len(chunks), filename)
-            extractions.append(extraction)
-            self._trace(
-                f"  Chunk {i+1}/{len(chunks)}: {len(chunk):,} chars → "
-                f"{len(extraction):,} chars extracted."
-            )
-
-        # ── Reduce: synthesize all extractions ──────────────────────────
-        combined = "\n\n---\n\n".join(extractions)
-        self._trace(
-            f"Map phase complete. Combined extraction: {len(combined):,} chars "
-            f"(from {len(full_text):,} original chars, "
-            f"{100 * len(combined) // len(full_text)}% of original)."
-        )
-
-        # Second compression pass if combined extractions are still too large
-        if len(combined) > SYNTHESIS_MAX_CHARS:
-            self._trace(
-                f"Combined extraction ({len(combined):,} chars) exceeds synthesis limit "
-                f"({SYNTHESIS_MAX_CHARS:,}). Running second compression pass..."
-            )
-            combined = self._compress_extractions(combined, filename)
-            self._trace(
-                f"Second compression complete: {len(combined):,} chars."
-            )
-
-        if web_context:
-            combined += web_context
-
-        self._trace("Running synthesis (Reduce phase)...")
-        messages = [
-            {"role": "system", "content": PROTOCOL_ANALYSIS_SYSTEM},
-            {"role": "user",   "content": PROTOCOL_SYNTHESIS_USER.format(
-                filename=filename,
-                num_chunks=len(chunks),
-                protocol_text=combined,
-            )},
-        ]
-        try:
-            data = self.llm.complete_json(messages, temperature=self.llm.temp_agents)
-        except Exception as e:
-            logger.error("Protocol synthesis failed: %s", e)
-            return AgentResult(
-                success=False, text_response="",
-                error_message=f"Protocol synthesis failed: {e}",
-            )
-
-        self._trace("Map-reduce analysis complete.")
-        return self._format_result(data, filename)
-
-    # ------------------------------------------------------------------
-    # Chunk extraction (one LLM call per chunk)
-    # ------------------------------------------------------------------
-
-    def _extract_chunk(
-        self, chunk_text: str, chunk_num: int, total_chunks: int, filename: str
-    ) -> str:
-        pct_start = int(100 * (chunk_num - 1) / total_chunks)
-        pct_end   = int(100 * chunk_num / total_chunks)
-        label_str = f"{pct_start}%–{pct_end}% of document"
-
-        messages = [
-            {"role": "system", "content": PROTOCOL_CHUNK_SYSTEM},
-            {"role": "user",   "content": PROTOCOL_CHUNK_USER.format(
-                filename=filename,
-                chunk_num=chunk_num,
-                total_chunks=total_chunks,
-                label_str=label_str,
-                max_chars=len(chunk_text),
-                chunk_text=chunk_text,
-            )},
-        ]
-        try:
-            return self.llm.complete(messages, temperature=self.llm.temp_deterministic)
-        except Exception as e:
-            logger.warning("Chunk %d/%d extraction failed: %s — using raw chunk", chunk_num, total_chunks, e)
-            return chunk_text[:SYNTHESIS_MAX_CHARS // total_chunks]
-
-    # ------------------------------------------------------------------
-    # Second-pass compression (only for very large docs)
-    # ------------------------------------------------------------------
-
-    def _compress_extractions(self, combined: str, filename: str) -> str:
-        """
-        Re-chunk and re-extract the combined extractions to reduce size further.
-        Used only when the first-pass combined output exceeds SYNTHESIS_MAX_CHARS.
-        """
-        second_chunks = self._split_into_chunks(combined, CHUNK_CHARS)
-        self._trace(
-            f"Second-pass compression: re-extracting {len(second_chunks)} chunk(s) "
-            "from combined first-pass extractions."
-        )
-        second_extractions = []
-        for i, chunk in enumerate(second_chunks):
-            extraction = self._extract_chunk(chunk, i + 1, len(second_chunks), filename)
-            second_extractions.append(extraction)
-
-        result = "\n\n---\n\n".join(second_extractions)
-        if len(result) > SYNTHESIS_MAX_CHARS:
-            # Hard truncation as last resort — prefer beginning of doc (objectives/design)
-            result = result[:SYNTHESIS_MAX_CHARS]
-            self._trace(
-                f"Hard truncation applied after second compression pass "
-                f"(result still exceeded {SYNTHESIS_MAX_CHARS:,} chars)."
-            )
-        return result
-
-    # ------------------------------------------------------------------
-    # Chunk splitter
+    # Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _split_into_chunks(text: str, chunk_size: int) -> list[str]:
-        """
-        Split text into chunks of up to chunk_size chars, breaking at
-        natural boundaries (triple-newline > double-newline > newline).
-        """
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-            if end < len(text):
-                # Search for the best break point in the last 10% of the chunk
-                search_from = end - chunk_size // 10
-                for sep in ("\n\n\n", "\n\n", "\n"):
-                    pos = text.rfind(sep, search_from, end)
-                    if pos > search_from:
-                        end = pos + len(sep)
-                        break
-            chunks.append(text[start:end])
-            start = end
-        return chunks
-
-    # ------------------------------------------------------------------
-    # Format output
-    # ------------------------------------------------------------------
+    def _assemble_full_text(file_info: dict, fmt: str) -> str:
+        if fmt == "pdf":
+            pages = file_info.get("pages", [])
+            return "\n\n".join(p for p in pages if p.strip())
+        return file_info.get("full_text") or file_info.get("text", "")
 
     def _format_result(self, data: dict, filename: str) -> AgentResult:
+        """Format single-call analysis result (unchanged from original)."""
         rating   = data.get("overall_rating", "").replace("_", " ").title()
         findings = sorted(
             data.get("findings", []),
@@ -323,7 +552,6 @@ class ProtocolAnalysisAgent(BaseAgent):
             for k, v in data["section_assessments"].items():
                 if v:
                     lines.append(f"**{k.replace('_', ' ').title()}:** {v}")
-
         table_data = [
             {
                 "#":              i + 1,
@@ -338,7 +566,10 @@ class ProtocolAnalysisAgent(BaseAgent):
             success=True,
             text_response="\n".join(lines),
             table_data=table_data or None,
-            table_columns=["#", "Section", "Finding", "Severity", "Recommendation"] if table_data else None,
+            table_columns=(
+                ["#", "Section", "Finding", "Severity", "Recommendation"]
+                if table_data else None
+            ),
         )
 
 
@@ -372,12 +603,10 @@ def _parse_pdf(raw: bytes, filename: str) -> dict:
         import pypdf
     except ImportError:
         raise ValueError("pypdf is required to read PDF files. Install with: pip install pypdf")
-
     try:
         reader = pypdf.PdfReader(io.BytesIO(raw))
     except Exception as e:
         raise ValueError(f"Failed to open PDF '{filename}': {e}")
-
     pages = [page.extract_text() or "" for page in reader.pages]
     if not any(p.strip() for p in pages):
         raise ValueError(
@@ -400,8 +629,8 @@ def _parse_docx(raw: bytes, filename: str) -> dict:
             "python-docx is required to read DOCX files. Install with: pip install python-docx"
         )
     try:
-        doc   = Document(io.BytesIO(raw))
-        text  = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        doc  = Document(io.BytesIO(raw))
+        text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
         if not text:
             raise ValueError(f"No text extracted from '{filename}'.")
         return {"filename": filename, "format": "docx", "full_text": text}
