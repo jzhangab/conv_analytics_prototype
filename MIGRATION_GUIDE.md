@@ -2,100 +2,289 @@
 ## Integrating `conv_analytics_prototype` into an Existing React + Python Application
 
 **Audience:** Software engineers performing the integration  
-**Scope:** Orchestration, LLM services, agents/skills, Snowflake backend, session history persistence, React frontend API contract
+**Scope:** Backend wrapper interface, LLM service swap, Snowflake data layer, session history persistence, Flask API contract, React frontend wiring
 
 ---
 
 ## Table of Contents
-1. [What Transfers Unchanged](#1-what-transfers-unchanged)
+1. [Architecture Overview — Single Entry & Exit](#1-architecture-overview)
 2. [Component Migration Map](#2-component-migration-map)
-3. [LLM Service Migration — Dataiku LLM Mesh → Standard API](#3-llm-service-migration)
-4. [Snowflake Migration — Replacing Dataiku Dataset Access](#4-snowflake-migration)
-5. [Session History Persistence — In-Memory → Persistent Store](#5-session-history-persistence)
-6. [Flask API Contract — React Frontend Integration](#6-flask-api-contract)
-7. [Frontend Integration Notes (React)](#7-frontend-integration-notes-react)
-8. [Configuration & Environment Variables](#8-configuration--environment-variables)
-9. [Migration Checklist](#9-migration-checklist)
+3. [Lift-and-Shift: The Backend Wrapper](#3-lift-and-shift-the-backend-wrapper)
+4. [LLM Service Migration — Dataiku LLM Mesh → Standard API](#4-llm-service-migration)
+5. [Snowflake Migration — Replacing Dataiku Dataset Access](#5-snowflake-migration)
+6. [Session History Persistence — In-Memory → Persistent Store](#6-session-history-persistence)
+7. [Flask API Contract — React Frontend Integration](#7-flask-api-contract)
+8. [Frontend Integration Notes (React)](#8-frontend-integration-notes-react)
+9. [Configuration & Environment Variables](#9-configuration--environment-variables)
+10. [Migration Checklist](#10-migration-checklist)
 
 ---
 
-## 1. What Transfers Unchanged
+## 1. Architecture Overview
 
-The following modules contain no Dataiku-specific dependencies and can be dropped into the target application as-is:
+The backend exposes a **single entry point and single exit point** through the `ChatBackend` wrapper. Every interaction — text messages, file uploads, confirmations, exports — flows through one method call.
 
-| Module | Path | Notes |
-|---|---|---|
-| Orchestrator | `backend/orchestrator/orchestrator.py` | Pure Python FSM logic |
-| Intent Classifier | `backend/orchestrator/intent_classifier.py` | Calls `llm_client` only |
-| Parameter Extractor | `backend/orchestrator/parameter_extractor.py` | Calls `llm_client` only |
-| Confirmation Manager | `backend/orchestrator/confirmation_manager.py` | Pure string logic |
-| Router | `backend/orchestrator/router.py` | Only wires agents together |
-| All 7 Agent files | `backend/agents/*.py` | Data-access calls isolated to one method each — see §4 |
-| Prompt Templates | `backend/llm/prompt_templates.py` | Pure string constants |
-| Response Parser | `backend/llm/response_parser.py` | Pure JSON parsing |
-| Parameter Schema | `backend/state/parameter_schema.py` | Pure dataclasses |
-| Conversation State | `backend/state/conversation_state.py` | Pure dataclasses |
-| String Matching | `backend/utils/string_matching.py` | Pure Python |
-| Chart Builder | `backend/utils/chart_builder.py` | Bokeh only |
-| Formatters | `backend/utils/formatters.py` | Pure Python |
-| Validators | `backend/utils/validators.py` | Pure Python |
-| Skills Config | `config/skills_config.yaml` | No changes needed |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        React Frontend                           │
+│              POST /api/interact  (JSON or multipart)            │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │  ChatRequest
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  backend/api/chat_backend.py                     │
+│                       ChatBackend.process()                      │
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                    Orchestrator (FSM)                   │   │
+│   │  IDLE → PARAMETER_GATHERING → CONFIRMATION_PENDING      │   │
+│   │       → SKILL_EXECUTION → ANALYSIS_PLANNING             │   │
+│   └───────────────────────┬─────────────────────────────────┘   │
+│                           │                                     │
+│              ┌────────────▼────────────┐                        │
+│              │   Router → SubAgents    │                        │
+│              │  (8 skills — see §3)    │                        │
+│              └─────────────────────────┘                        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │  ChatResponse
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  message · fsm_state · table_data · chart_json                  │
+│  downloadable_files (base64 CSV) · uploaded_file_metadata       │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-**Three areas require changes:** LLM client, data access layer, and session store.
+### What this means for integration
+
+The entire backend can be lifted into the target application by importing two objects:
+
+```python
+from backend.api.chat_backend import ChatBackend
+from backend.api.models import ChatRequest
+
+backend = ChatBackend()   # one instance, process-lifetime
+response = backend.process(ChatRequest(session_id="...", action="message", message="..."))
+```
+
+`webapp.py` is a thin HTTP adapter over this call. You can keep it, replace it, or skip it entirely and call `ChatBackend.process()` directly from your existing Python server.
 
 ---
 
 ## 2. Component Migration Map
 
 ```
-conv_analytics_prototype          →   Target Application
-─────────────────────────────────────────────────────────────────
-backend/llm/llm_client.py         →   REPLACE (§3)
-  └─ dataiku LLM Mesh calls           └─ Anthropic / OpenAI SDK calls
+conv_analytics_prototype               →   Target Application
+──────────────────────────────────────────────────────────────────────
+backend/api/chat_backend.py            →   KEEP — primary integration surface
+  └─ ChatBackend.process(ChatRequest)      └─ call directly or via HTTP adapter
 
-backend/agents/*_agent.py         →   MODIFY one method per agent (§4)
-  └─ dataiku.Dataset().get_dataframe()  └─ snowflake_client.query_to_df(sql)
+backend/api/models.py                  →   KEEP — shared contract types
+  └─ ChatRequest, ChatResponse,            └─ no changes needed
+     UploadedFile, DownloadableFile
 
-webapp.py → /export endpoint      →   MODIFY (§4)
-  └─ dataiku.Dataset().write_with_schema()  └─ snowflake_client.insert_df(df, table)
+webapp.py                              →   KEEP or REPLACE HTTP adapter
+  └─ POST /api/interact (unified)          └─ wire to your existing Flask/FastAPI app
+  └─ legacy /chat /upload /confirm         └─ drop once React is live
+     /export routes
 
-backend/state/session_store.py    →   REPLACE (§5)
-  └─ in-memory dict + TTL eviction      └─ Snowflake (or Postgres) session tables
+backend/llm/llm_client.py             →   REPLACE (§4)
+  └─ Dataiku LLM Mesh calls               └─ Anthropic / OpenAI SDK
 
-webapp.py (Flask routes)          →   KEEP routes, add CORS, merge into app (§6)
-  └─ Jinja2 template rendering         └─ remove; React serves its own HTML
+backend/agents/*_agent.py (8 agents)  →   MODIFY one method per data-loading agent (§5)
+  └─ dataiku.Dataset().get_dataframe()     └─ snowflake_client.query_to_df(sql)
 
-frontend/ (HTML + vanilla JS)     →   REPLACE with React components (§7)
+backend/state/session_store.py        →   REPLACE (§6)
+  └─ in-memory dict + TTL eviction         └─ Snowflake-backed persistent store
 ```
+
+### What transfers unchanged
+
+| Module | Path |
+|---|---|
+| Orchestrator FSM | `backend/orchestrator/orchestrator.py` |
+| Intent Classifier | `backend/orchestrator/intent_classifier.py` |
+| Parameter Extractor | `backend/orchestrator/parameter_extractor.py` |
+| Confirmation Manager | `backend/orchestrator/confirmation_manager.py` |
+| Router | `backend/orchestrator/router.py` |
+| All 8 Agent files | `backend/agents/*.py` (data-load isolated to one method each — §5) |
+| Prompt Templates | `backend/llm/prompt_templates.py` |
+| Response Parser | `backend/llm/response_parser.py` |
+| Parameter Schema | `backend/state/parameter_schema.py` |
+| Conversation State | `backend/state/conversation_state.py` |
+| String Matching | `backend/utils/string_matching.py` |
+| Chart Builder | `backend/utils/chart_builder.py` |
+| Formatters / Validators | `backend/utils/` |
+| Skills Config | `config/skills_config.yaml` |
+
+**Three areas require changes:** LLM client, data access layer, session store.
 
 ---
 
-## 3. LLM Service Migration
+## 3. Lift-and-Shift: The Backend Wrapper
+
+### Entry: `ChatRequest`
+
+All interactions are expressed as a `ChatRequest` dataclass (`backend/api/models.py`):
+
+| Field | Type | Used by action |
+|---|---|---|
+| `session_id` | `str` | all |
+| `action` | `"message" \| "confirm" \| "upload" \| "export"` | all |
+| `message` | `str` | `message`, `confirm` |
+| `confirmed` | `bool` | `confirm` (legacy confirm endpoint) |
+| `edit_params` | `dict` | `confirm` with edits |
+| `files` | `list[UploadedFile]` | `upload` |
+| `result_id` | `str` | `export` |
+| `export_destination` | `str` | `export` |
+
+`UploadedFile` is a framework-agnostic file holder — it duck-types Werkzeug `FileStorage` so existing agent parsing code requires no changes:
+
+```python
+@dataclass
+class UploadedFile:
+    file_key: str          # "site_file" or "protocol_file"
+    filename: str
+    data: bytes
+    content_type: str = "application/octet-stream"
+
+    def read(self) -> bytes: return self.data
+    def stream(self): return io.BytesIO(self.data)
+```
+
+### Exit: `ChatResponse`
+
+Every `backend.process()` call returns a `ChatResponse`:
+
+```python
+@dataclass
+class ChatResponse:
+    session_id: str
+    action: str
+    success: bool
+    message: str                    # assistant markdown text
+    fsm_state: str                  # idle | parameter_gathering | confirmation_pending | ...
+    active_skill: str | None        # skill currently in progress
+    skill_id: str | None            # skill that just completed
+    result_id: str | None           # UUID for this skill result
+    table_data: list[dict] | None   # result rows
+    table_columns: list[str] | None # column labels
+    chart_json: dict | None         # Bokeh JSON item for chart rendering
+    downloadable_files: list[DownloadableFile]  # base64-encoded CSV/Excel
+    uploaded_file_metadata: dict | None         # info about uploaded file
+    error: str | None
+```
+
+`DownloadableFile` carries base64-encoded content and metadata so files can be transported over JSON:
+
+```python
+@dataclass
+class DownloadableFile:
+    filename: str
+    content_type: str
+    data_base64: str    # base64-encoded bytes
+    description: str = ""
+```
+
+When a skill produces `table_data`, the backend automatically generates a downloadable CSV in `downloadable_files` — no extra work needed.
+
+### Calling from Python
+
+```python
+from backend.api.chat_backend import ChatBackend
+from backend.api.models import ChatRequest, UploadedFile
+
+# Initialize once — pass optional overrides for LLM config and Snowflake
+backend = ChatBackend(
+    llm_client=my_llm_client,      # optional: inject your own LLMClient
+    session_store=my_session_store, # optional: inject persistent session store
+    snowflake_client=my_sf_client,  # optional: inject Snowflake client
+)
+
+# Text message
+resp = backend.process(ChatRequest(
+    session_id="session-123",
+    action="message",
+    message="benchmark KRAS G12C in adults, Phase 3",
+))
+print(resp.message)       # assistant markdown
+print(resp.fsm_state)     # "confirmation_pending" — bot is asking user to confirm params
+
+# Confirm the parameters
+resp = backend.process(ChatRequest(
+    session_id="session-123",
+    action="confirm",
+    message="yes",
+))
+print(resp.table_data)    # skill result rows
+print(resp.chart_json)    # Bokeh chart (if applicable)
+
+# Upload a file
+resp = backend.process(ChatRequest(
+    session_id="session-123",
+    action="upload",
+    files=[UploadedFile(
+        file_key="site_file",
+        filename="sites.csv",
+        data=open("sites.csv", "rb").read(),
+    )],
+))
+
+# Export a result
+resp = backend.process(ChatRequest(
+    session_id="session-123",
+    action="export",
+    result_id="uuid-of-result",
+    export_destination="MY_EXPORT_TABLE",
+))
+```
+
+### The 8 Skills
+
+| Skill ID | Agent | Primary Dataset |
+|---|---|---|
+| `cro_site_profiling` | `CROSiteProfilingAgent` | `CTMS_DATASET_JOIN_ISSUE_DATASET` |
+| `trial_benchmarking` | `TrialBenchmarkingAgent` | `CITELINE_DATA` |
+| `competitive_intelligence` | `CompetitiveIntelligenceAgent` | `CITELINE_DATA` |
+| `drug_reimbursement` | `DrugReimbursementAgent` | Web search only |
+| `enrollment_forecasting` | `EnrollmentForecastingAgent` | Web search only |
+| `protocol_analysis` | `ProtocolAnalysisAgent` | Uploaded file |
+| `country_ranking` | `CountryRankingAgent` | Web search only |
+| `reforecasting` | `ReforecastingAgent` | `REFORECAST` |
+
+`competitive_intelligence` shares the Citeline dataset with `trial_benchmarking` but filters for trials whose status is "not yet started" (or start year ≥ current year as fallback). No additional dataset is required.
+
+---
+
+## 4. LLM Service Migration
 
 ### What to Replace
-`backend/llm/llm_client.py` currently wraps the Dataiku LLM Mesh API. The rest of the codebase only calls two methods on it:
+
+`backend/llm/llm_client.py` wraps the Dataiku LLM Mesh API. The rest of the codebase only ever calls:
 
 - `llm.complete(messages: list[dict], temperature: float) -> str`
 - `llm.complete_json(messages: list[dict], temperature: float) -> dict`
 
-Replace the class body while keeping the same public interface so no call sites need to change.
+Replace the class body while keeping the same public interface so no call sites change.
 
-### Anthropic Claude Implementation
+### Anthropic Claude
 
 ```python
 # backend/llm/llm_client.py
-import os, json, anthropic
+import os, anthropic
 from backend.llm.response_parser import ResponseParser
 
 class LLMClient:
     def __init__(self, config: dict):
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self.model = config.get("model", "claude-sonnet-4-6")
+        self.client     = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self.model      = config.get("model", "claude-sonnet-4-6")
         self.max_tokens = config.get("max_tokens", 16384)
+        self.temp_classify     = config.get("temperature_classify", 0.1)
+        self.temp_extract      = config.get("temperature_extract", 0.1)
+        self.temp_agents       = config.get("temperature_agents", 0.3)
+        self.temp_deterministic = config.get("temperature_deterministic", 0.0)
         self.call_log: list[dict] = []
 
     def complete(self, messages: list[dict], temperature: float = 0.3) -> str:
-        # Split off a leading system message if present
         system = ""
         chat_messages = []
         for m in messages:
@@ -103,24 +292,19 @@ class LLMClient:
                 system = m["content"]
             else:
                 chat_messages.append(m)
-
         response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=temperature,
-            system=system,
-            messages=chat_messages,
+            model=self.model, max_tokens=self.max_tokens,
+            temperature=temperature, system=system, messages=chat_messages,
         )
         result = response.content[0].text
         self.call_log.append({"messages": messages, "response": result})
         return result
 
     def complete_json(self, messages: list[dict], temperature: float = 0.1) -> dict:
-        raw = self.complete(messages, temperature)
-        return ResponseParser.parse_json(raw)
+        return ResponseParser.parse_json(self.complete(messages, temperature))
 ```
 
-### OpenAI / Azure OpenAI Implementation
+### OpenAI / Azure OpenAI
 
 ```python
 # backend/llm/llm_client.py  (OpenAI variant)
@@ -129,32 +313,33 @@ from backend.llm.response_parser import ResponseParser
 
 class LLMClient:
     def __init__(self, config: dict):
-        self.client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-        self.model = config.get("model", "gpt-4o")
+        self.client     = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        self.model      = config.get("model", "gpt-4o")
         self.max_tokens = config.get("max_tokens", 16384)
+        self.temp_classify      = config.get("temperature_classify", 0.1)
+        self.temp_extract       = config.get("temperature_extract", 0.1)
+        self.temp_agents        = config.get("temperature_agents", 0.3)
+        self.temp_deterministic = config.get("temperature_deterministic", 0.0)
         self.call_log: list[dict] = []
 
     def complete(self, messages: list[dict], temperature: float = 0.3) -> str:
         response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=self.max_tokens,
+            model=self.model, messages=messages,
+            temperature=temperature, max_tokens=self.max_tokens,
         )
         result = response.choices[0].message.content
         self.call_log.append({"messages": messages, "response": result})
         return result
 
     def complete_json(self, messages: list[dict], temperature: float = 0.1) -> dict:
-        raw = self.complete(messages, temperature)
-        return ResponseParser.parse_json(raw)
+        return ResponseParser.parse_json(self.complete(messages, temperature))
 ```
 
 ### Temperature Config (`config/llm_config.yaml`)
 
 ```yaml
 llm_mesh:
-  model: "claude-sonnet-4-6"          # or "gpt-4o"
+  model: "claude-sonnet-4-6"
   temperature_classify: 0.1
   temperature_extract: 0.1
   temperature_agents: 0.3
@@ -163,29 +348,23 @@ llm_mesh:
   context_window_turns: 10
 ```
 
-No changes needed to callers — `llm_config.yaml` is loaded once in `webapp.py` and passed to `LLMClient.__init__`.
-
 ---
 
-## 4. Snowflake Migration
+## 5. Snowflake Migration
 
-### Dataiku Access Pattern (Current)
+### Current Dataiku Access Pattern
 
-Three agents load reference data from Dataiku datasets:
+Three agents read reference datasets; one endpoint writes back:
 
-| Agent | Dataiku Dataset | Purpose |
+| Agent | Dataiku Dataset | Access pattern |
 |---|---|---|
-| `CROSiteProfilingAgent` | `CTMS_DATASET` | Master site list for fuzzy matching |
-| `TrialBenchmarkingAgent` | `CITELINE_DATA` | Historical trial statistics |
-| `ReforecastingAgent` | `REFORECAST` | Protocol-level forecast data |
-
-The `/export` endpoint writes results back to a user-named Dataiku dataset.
-
-Each access is a single call: `dataiku.Dataset(name).get_dataframe()` or `dataiku.Dataset(name).write_with_schema(df)`.
+| `CROSiteProfilingAgent` | `CTMS_DATASET_JOIN_ISSUE_DATASET` | Full load, cached per process |
+| `TrialBenchmarkingAgent` | `CITELINE_DATA` | Full load, cached per process |
+| `CompetitiveIntelligenceAgent` | `CITELINE_DATA` | Full load, shared cache with benchmarking |
+| `ReforecastingAgent` | `REFORECAST` | Full load, filtered in Python |
+| `/export` endpoint | user-named dataset | Write result DataFrame |
 
 ### Snowflake Client
-
-Create a shared Snowflake connector module:
 
 ```python
 # backend/data/snowflake_client.py
@@ -216,13 +395,8 @@ class SnowflakeClient:
         return cur.fetch_pandas_all()
 
     def insert_df(self, df: pd.DataFrame, table_name: str, overwrite: bool = False) -> None:
-        write_pandas(
-            self._get_conn(),
-            df,
-            table_name.upper(),
-            auto_create_table=True,
-            overwrite=overwrite,
-        )
+        write_pandas(self._get_conn(), df, table_name.upper(),
+                     auto_create_table=True, overwrite=overwrite)
 
     def execute(self, sql: str, params: tuple = ()) -> None:
         self._get_conn().cursor().execute(sql, params)
@@ -232,47 +406,46 @@ Install: `pip install snowflake-connector-python[pandas]`
 
 ### Agent-Level Changes
 
-Each agent has exactly one data-loading method. Only those methods need to change.
+Each agent isolates Dataiku access in exactly one method. Only those methods change.
 
-#### CROSiteProfilingAgent (`site_list_merger_agent.py`)
+#### CROSiteProfilingAgent
 
 ```python
 # BEFORE
 import dataiku
-df = dataiku.Dataset("CTMS_DATASET").get_dataframe()
+df = dataiku.Dataset("CTMS_DATASET_JOIN_ISSUE_DATASET").get_dataframe()
 
-# AFTER — inject snowflake_client at construction
+# AFTER — inject SnowflakeClient at construction
 class CROSiteProfilingAgent(BaseAgent):
     def __init__(self, llm, snowflake_client):
         self.llm = llm
-        self.sf = snowflake_client
+        self.sf  = snowflake_client
 
     def _load_ctms(self) -> pd.DataFrame:
         return self.sf.query_to_df("SELECT * FROM CTMS_SITES")
 ```
 
-Table name `CTMS_SITES` should match what the Snowflake DBA creates when migrating the Dataiku dataset.
+#### TrialBenchmarkingAgent & CompetitiveIntelligenceAgent
 
-#### TrialBenchmarkingAgent (`trial_benchmarking_agent.py`)
+Both use the same Citeline dataset and the same load method (`_load_citeline_df`). Change it once in `TrialBenchmarkingAgent`; `CompetitiveIntelligenceAgent` inherits the change:
 
 ```python
 # BEFORE
 df = dataiku.Dataset("CITELINE_DATA").get_dataframe()
 
 # AFTER
-def _load_citeline(self) -> pd.DataFrame:
-    return self.sf.query_to_df("SELECT * FROM CITELINE_TRIALS")
+def _load_citeline_df(self):
+    df = self.sf.query_to_df("SELECT * FROM CITELINE_TRIALS")
+    return df, None
 ```
 
-The agent already falls back to a local CSV if loading fails — keep that fallback for dev/test.
-
-#### ReforecastingAgent (`reforecasting_agent.py`)
+#### ReforecastingAgent
 
 ```python
 # BEFORE
 df = dataiku.Dataset("REFORECAST").get_dataframe()
 
-# AFTER
+# AFTER — filter at query time (more efficient than full load)
 def _load_reforecast(self, protocol_id: str) -> pd.DataFrame:
     return self.sf.query_to_df(
         "SELECT * FROM REFORECAST_DATA WHERE PROTOCOL_ID = %s",
@@ -280,122 +453,99 @@ def _load_reforecast(self, protocol_id: str) -> pd.DataFrame:
     )
 ```
 
-Filtering at the SQL layer is more efficient than loading all rows and filtering in Python.
+#### Export via ChatBackend
 
-#### Export Endpoint (`webapp.py`)
+The `export` action in `ChatBackend._handle_export()` already retrieves the result from session state and returns it as a `DownloadableFile`. To additionally write it to Snowflake, inject a `snowflake_client` when constructing `ChatBackend`:
 
 ```python
-# BEFORE
-@app.route("/export", methods=["POST"])
-def export():
-    dataset_name = request.json.get("dataset_name")
-    dataiku.Dataset(dataset_name).write_with_schema(df)
-
-# AFTER
-@app.route("/export", methods=["POST"])
-def export():
-    data = request.json
-    table_name = data.get("table_name", "EXPORT_RESULTS")
-    result_id = data.get("result_id")
-    state = session_store.get(data["session_id"])
-    result = next(r for r in state.prior_results if r.result_id == result_id)
-    df = pd.DataFrame(result.table_data, columns=result.table_columns)
-    snowflake_client.insert_df(df, table_name, overwrite=data.get("overwrite", False))
-    return jsonify({"success": True, "table": table_name})
+backend = ChatBackend(snowflake_client=SnowflakeClient())
 ```
 
-### Router Update (`backend/orchestrator/router.py`)
-
-Pass `snowflake_client` when constructing data-dependent agents:
+Then in `ChatBackend._handle_export()`:
 
 ```python
+if self._snowflake and result.table_data:
+    df = pd.DataFrame(result.table_data, columns=result.table_columns)
+    self._snowflake.insert_df(df, req.export_destination or "EXPORT_RESULTS")
+```
+
+### Router Update
+
+```python
+# backend/orchestrator/router.py
 from backend.data.snowflake_client import SnowflakeClient
 
-def build_router(llm, snowflake_client: SnowflakeClient):
-    return {
-        "cro_site_profiling":     CROSiteProfilingAgent(llm, snowflake_client),
-        "trial_benchmarking":     TrialBenchmarkingAgent(llm, snowflake_client),
-        "drug_reimbursement":     DrugReimbursementAgent(llm),
-        "enrollment_forecasting": EnrollmentForecastingAgent(llm),
-        "protocol_analysis":      ProtocolAnalysisAgent(llm),
-        "country_ranking":        CountryRankingAgent(llm),
-        "reforecasting":          ReforecastingAgent(snowflake_client),
-    }
+class Router:
+    def __init__(self, llm, config=None, web_search=None, snowflake_client=None):
+        sf = snowflake_client
+        citeline_dataset = (config or {}).get("data_sources", {}).get("citeline_dataset", "CITELINE_DATA")
+        self._registry = {
+            "cro_site_profiling":      CROSiteProfilingAgent(llm, sf),
+            "trial_benchmarking":      TrialBenchmarkingAgent(llm, sf, web_search=web_search),
+            "competitive_intelligence": CompetitiveIntelligenceAgent(llm, sf, web_search=web_search),
+            "drug_reimbursement":      DrugReimbursementAgent(llm, web_search=web_search),
+            "enrollment_forecasting":  EnrollmentForecastingAgent(llm, web_search=web_search),
+            "protocol_analysis":       ProtocolAnalysisAgent(llm, web_search=web_search),
+            "country_ranking":         CountryRankingAgent(llm, web_search=web_search),
+            "reforecasting":           ReforecastingAgent(sf),
+        }
 ```
 
 ---
 
-## 5. Session History Persistence
+## 6. Session History Persistence
 
-### Current State (In-Memory)
+### Current State
 
-`backend/state/session_store.py` stores all sessions in a Python dict with a threading lock and TTL eviction. Sessions are lost on process restart — there is no persistence today.
-
-### What "Session History" Requires
-
-The existing `ConversationState` already tracks everything needed:
-- `messages` — full conversation turn-by-turn (`role`, `content`, `timestamp`)
-- `prior_results` — completed skill runs with parameters, text, table data, chart JSON
-- `fsm_state`, `active_skill`, `collected_parameters` — in-flight state
-- `uploaded_files` — uploaded file metadata
-
-Persistence means serializing these to a database on every write and rehydrating them on session resume.
+`backend/state/session_store.py` uses an in-memory dict with TTL eviction. Sessions are lost on process restart.
 
 ### Snowflake Schema
 
 ```sql
--- Session metadata
 CREATE TABLE chat_sessions (
-    session_id      VARCHAR(64)     PRIMARY KEY,
+    session_id      VARCHAR(64)   PRIMARY KEY,
     user_id         VARCHAR(255),
-    created_at      TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP,
-    last_activity   TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP,
-    fsm_state       VARCHAR(50)     DEFAULT 'idle',
+    created_at      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    last_activity   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    fsm_state       VARCHAR(50)   DEFAULT 'idle',
     active_skill    VARCHAR(100),
-    metadata        VARIANT                          -- JSONB for collected_params, pending_confirmation, etc.
+    metadata        VARIANT       -- collected_params, pending_confirmation, etc.
 );
 
--- One row per message (append-only)
 CREATE TABLE chat_messages (
-    message_id      VARCHAR(64)     DEFAULT UUID_STRING() PRIMARY KEY,
-    session_id      VARCHAR(64)     REFERENCES chat_sessions(session_id),
-    role            VARCHAR(20),                     -- user | assistant | system
-    content         TEXT,
-    timestamp       TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP,
-    metadata        VARIANT                          -- optional: intent, skill_id, etc.
+    message_id  VARCHAR(64)   DEFAULT UUID_STRING() PRIMARY KEY,
+    session_id  VARCHAR(64)   REFERENCES chat_sessions(session_id),
+    role        VARCHAR(20),
+    content     TEXT,
+    timestamp   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    metadata    VARIANT
 );
 
--- One row per completed skill execution
 CREATE TABLE skill_results (
-    result_id       VARCHAR(64)     PRIMARY KEY,
-    session_id      VARCHAR(64)     REFERENCES chat_sessions(session_id),
+    result_id       VARCHAR(64) PRIMARY KEY,
+    session_id      VARCHAR(64) REFERENCES chat_sessions(session_id),
     skill_id        VARCHAR(100),
     parameters_used VARIANT,
     text_response   TEXT,
     table_data      VARIANT,
     table_columns   VARIANT,
     chart_json      VARIANT,
-    timestamp       TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP
+    timestamp       TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-Snowflake `VARIANT` columns store arbitrary JSON — ideal for `table_data`, `parameters_used`, and `chart_json`.
-
-### Persistent Session Store
-
-Replace `backend/state/session_store.py` with a Snowflake-backed implementation:
+### Persistent SessionStore
 
 ```python
 # backend/state/session_store.py
 import json, uuid
-from datetime import datetime
 from backend.state.conversation_state import ConversationState, Message, SkillResult, FSMState
 from backend.data.snowflake_client import SnowflakeClient
 
 class SessionStore:
     def __init__(self, snowflake_client: SnowflakeClient):
         self.sf = snowflake_client
-        self._cache: dict[str, ConversationState] = {}    # process-local cache
+        self._cache: dict[str, ConversationState] = {}
 
     def get_or_create(self, session_id: str, user_id: str = None) -> ConversationState:
         if session_id in self._cache:
@@ -403,18 +553,28 @@ class SessionStore:
         state = self._load_from_db(session_id)
         if state is None:
             state = ConversationState(session_id=session_id)
-            self._create_session_row(session_id, user_id)
+            self.sf.execute(
+                "INSERT INTO chat_sessions (session_id, user_id) VALUES (%s, %s)",
+                (session_id, user_id)
+            )
         self._cache[session_id] = state
         return state
 
     def save(self, state: ConversationState) -> None:
-        """Call after every FSM transition."""
         self._cache[state.session_id] = state
-        self._upsert_session(state)
+        meta = json.dumps({"collected_parameters": state.collected_parameters})
+        self.sf.execute(
+            """MERGE INTO chat_sessions t USING (SELECT %s sid) s ON t.session_id = s.sid
+               WHEN MATCHED THEN UPDATE SET
+                 fsm_state = %s, active_skill = %s,
+                 last_activity = CURRENT_TIMESTAMP, metadata = PARSE_JSON(%s)""",
+            (state.session_id, state.fsm_state.name.lower(), state.active_skill, meta)
+        )
 
     def append_message(self, session_id: str, message: Message) -> None:
         self.sf.execute(
-            """INSERT INTO chat_messages (message_id, session_id, role, content, timestamp, metadata)
+            """INSERT INTO chat_messages
+               (message_id, session_id, role, content, timestamp, metadata)
                SELECT %s, %s, %s, %s, %s, PARSE_JSON(%s)""",
             (str(uuid.uuid4()), session_id, message.role, message.content,
              message.timestamp.isoformat(), json.dumps(message.metadata or {}))
@@ -435,304 +595,212 @@ class SessionStore:
     def list_sessions(self, user_id: str) -> list[dict]:
         df = self.sf.query_to_df(
             "SELECT session_id, created_at, last_activity FROM chat_sessions "
-            "WHERE user_id = %s ORDER BY last_activity DESC",
-            (user_id,)
+            "WHERE user_id = %s ORDER BY last_activity DESC", (user_id,)
         )
         return df.to_dict(orient="records")
 
     def get_history(self, session_id: str) -> list[dict]:
         df = self.sf.query_to_df(
             "SELECT role, content, timestamp FROM chat_messages "
-            "WHERE session_id = %s ORDER BY timestamp ASC",
-            (session_id,)
-        )
-        return df.to_dict(orient="records")
-
-    # ── private helpers ────────────────────────────────────────────────────
-
-    def _load_from_db(self, session_id: str) -> ConversationState | None:
-        df = self.sf.query_to_df(
-            "SELECT * FROM chat_sessions WHERE session_id = %s", (session_id,)
-        )
-        if df.empty:
-            return None
-        row = df.iloc[0]
-        state = ConversationState(session_id=session_id)
-        state.fsm_state = FSMState[row["FSM_STATE"].upper()]
-        state.active_skill = row.get("ACTIVE_SKILL")
-        meta = json.loads(row["METADATA"]) if row["METADATA"] else {}
-        state.collected_parameters = meta.get("collected_parameters", {})
-        state.messages = self._load_messages(session_id)
-        state.prior_results = self._load_skill_results(session_id)
-        return state
-
-    def _load_messages(self, session_id: str) -> list[Message]:
-        df = self.sf.query_to_df(
-            "SELECT role, content, timestamp, metadata FROM chat_messages "
             "WHERE session_id = %s ORDER BY timestamp ASC", (session_id,)
         )
-        return [
-            Message(role=r["ROLE"], content=r["CONTENT"],
-                    timestamp=r["TIMESTAMP"], metadata=json.loads(r["METADATA"] or "{}"))
-            for _, r in df.iterrows()
-        ]
-
-    def _load_skill_results(self, session_id: str) -> list[SkillResult]:
-        df = self.sf.query_to_df(
-            "SELECT * FROM skill_results WHERE session_id = %s ORDER BY timestamp ASC",
-            (session_id,)
-        )
-        results = []
-        for _, r in df.iterrows():
-            results.append(SkillResult(
-                result_id=r["RESULT_ID"], skill_id=r["SKILL_ID"],
-                parameters_used=json.loads(r["PARAMETERS_USED"] or "{}"),
-                text_response=r["TEXT_RESPONSE"],
-                table_data=json.loads(r["TABLE_DATA"] or "null"),
-                table_columns=json.loads(r["TABLE_COLUMNS"] or "null"),
-                chart_json=json.loads(r["CHART_JSON"] or "null"),
-                timestamp=r["TIMESTAMP"],
-            ))
-        return results
-
-    def _create_session_row(self, session_id: str, user_id: str) -> None:
-        self.sf.execute(
-            "INSERT INTO chat_sessions (session_id, user_id) VALUES (%s, %s)",
-            (session_id, user_id)
-        )
-
-    def _upsert_session(self, state: ConversationState) -> None:
-        meta = json.dumps({
-            "collected_parameters": state.collected_parameters,
-            "pending_confirmation": None,   # serialize if needed
-        })
-        self.sf.execute(
-            """MERGE INTO chat_sessions t USING (SELECT %s sid) s ON t.session_id = s.sid
-               WHEN MATCHED THEN UPDATE SET
-                 fsm_state = %s, active_skill = %s,
-                 last_activity = CURRENT_TIMESTAMP, metadata = PARSE_JSON(%s)""",
-            (state.session_id, state.fsm_state.name.lower(), state.active_skill, meta)
-        )
+        return df.to_dict(orient="records")
 ```
 
-**Orchestrator Integration:** After every `process_message` call, the orchestrator calls `session_store.save(state)`. The `append_message` and `append_skill_result` hooks should be called inside `_execute_skill` when results arrive.
+Inject into `ChatBackend`:
+
+```python
+backend = ChatBackend(
+    session_store=SessionStore(SnowflakeClient()),
+    snowflake_client=SnowflakeClient(),
+)
+```
 
 ---
 
-## 6. Flask API Contract
+## 7. Flask API Contract
 
-These are the endpoints the React frontend must call. The existing routes stay unchanged — only remove the Jinja2 template render on `GET /` since React handles routing.
+`webapp.py` is the HTTP adapter. It translates HTTP requests into `ChatRequest` objects, calls `ChatBackend.process()`, and returns `ChatResponse.to_dict()` as JSON. No business logic lives in `webapp.py`.
 
-### `POST /chat`
+### Unified Endpoint — `POST /api/interact`
 
-**Purpose:** Send a user message; receive assistant response.
+This is the **primary endpoint** for the React frontend. All four action types go through it.
 
-**Request:**
+**Action: `message`** (JSON body)
+
 ```json
-{
-  "session_id": "uuid-string",
-  "message": "benchmark the KRAS G12C indication in adults phase 3"
-}
+{ "session_id": "uuid", "action": "message", "message": "benchmark KRAS G12C adults Phase 3" }
 ```
 
-**Response:**
+**Action: `confirm`** (JSON body)
+
+```json
+{ "session_id": "uuid", "action": "confirm", "message": "yes" }
+```
+
+**Action: `upload`** (multipart/form-data)
+
+```
+session_id=uuid
+file_key=site_file          (or "protocol_file")
+site_file=<binary>
+```
+
+**Action: `export`** (JSON body)
+
+```json
+{ "session_id": "uuid", "action": "export", "result_id": "uuid", "export_destination": "MY_TABLE" }
+```
+
+### Response Shape (`ChatResponse.to_dict()`)
+
+Every response from `/api/interact` has this shape:
+
 ```json
 {
-  "message": "<assistant markdown text>",
-  "fsm_state": "confirmation_pending",
-  "active_skill": "trial_benchmarking",
+  "session_id": "uuid",
+  "action": "message",
+  "success": true,
+  "message": "**Trial Benchmarking: KRAS G12C — Phase 3 — Adult**\n\n...",
+  "fsm_state": "idle",
+  "active_skill": null,
   "skill_id": "trial_benchmarking",
-  "result_id": "uuid-if-skill-just-executed",
-  "table_data": [{"Indication": "KRAS G12C", ...}, ...],
-  "table_columns": ["Indication", "Phase", "Median Sites", ...],
+  "result_id": "uuid-of-result",
+  "table_data": [{"Trial ID": "NCT001", "Phase": "Phase 3", ...}, ...],
+  "table_columns": ["Trial ID", "Phase", "Sites", "Patients", ...],
   "chart_json": null,
-  "uploaded_files": {},
+  "downloadable_files": [
+    {
+      "filename": "trial_benchmarking_results.csv",
+      "content_type": "text/csv",
+      "data_base64": "VHJpYWwgSUQs...",
+      "description": "Download results as CSV"
+    }
+  ],
+  "uploaded_file_metadata": null,
   "error": null
 }
 ```
 
-**States returned in `fsm_state`:**
+**`fsm_state` values:**
 - `idle` — ready for next request
-- `parameter_gathering` — bot is asking follow-up questions for missing params
-- `confirmation_pending` — bot has all params and is asking user to confirm before running
-- `analysis_planning` — bot has generated an analysis plan and is asking for approval
-- `skill_execution` — (transient, should not persist in response)
+- `parameter_gathering` — bot is collecting missing skill parameters
+- `confirmation_pending` — all parameters collected, awaiting user confirmation
+- `analysis_planning` — bot generated a plan, awaiting approval
+- `skill_execution` — transient; should resolve before response is returned
 
-### `POST /confirm`
+### Legacy Routes (kept for backward compatibility)
 
-**Purpose:** Send the user's yes/no/edit reply to a confirmation prompt.
+`webapp.py` also exposes:
+- `POST /chat` → `action="message"`
+- `POST /upload` → `action="upload"`
+- `POST /confirm` → `action="confirm"`
+- `POST /export` → `action="export"`
 
-**Request:**
-```json
-{
-  "session_id": "uuid-string",
-  "message": "yes"
-}
+These forward to `ChatBackend.process()` the same way as `/api/interact`. Keep them during transition; drop them once the React frontend is fully wired.
+
+### Session History Endpoints (new — add to `webapp.py`)
+
+```python
+@app.route("/sessions")
+def list_sessions():
+    user_id = request.args.get("user_id")
+    backend, err = _guard()
+    if err: return jsonify(err[0]), err[1]
+    sessions = backend.session_store.list_sessions(user_id)
+    return jsonify({"sessions": sessions})
+
+@app.route("/sessions/<session_id>/history")
+def session_history(session_id):
+    backend, err = _guard()
+    if err: return jsonify(err[0]), err[1]
+    messages = backend.session_store.get_history(session_id)
+    return jsonify({"messages": messages})
 ```
 
-**Response:** Same shape as `/chat`.
-
-### `POST /upload`
-
-**Purpose:** Upload a CSV or Excel file (site list, protocol PDF).
-
-**Request:** `multipart/form-data`
-```
-file_key:     "site_file" | "protocol_file"
-file:         <binary>
-session_id:   "uuid-string"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "filename": "sites.csv",
-  "columns": ["Site Name", "City", "Address"],
-  "file_key": "site_file"
-}
-```
-
-### `POST /export`
-
-**Purpose:** Write a skill result to Snowflake.
-
-**Request:**
-```json
-{
-  "session_id": "uuid-string",
-  "result_id": "uuid-of-skill-result",
-  "table_name": "MY_EXPORT_TABLE",
-  "overwrite": false
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "table": "MY_EXPORT_TABLE"
-}
-```
-
-### `GET /sessions?user_id=<id>`
-
-**New endpoint** — not in current codebase, needs to be added for session history browsing.
-
-**Response:**
-```json
-{
-  "sessions": [
-    {
-      "session_id": "uuid",
-      "created_at": "2025-01-15T10:00:00Z",
-      "last_activity": "2025-01-15T10:45:00Z"
-    }
-  ]
-}
-```
-
-### `GET /sessions/<session_id>/history`
-
-**New endpoint** — returns full message history for a session.
-
-**Response:**
-```json
-{
-  "messages": [
-    {"role": "user", "content": "...", "timestamp": "..."},
-    {"role": "assistant", "content": "...", "timestamp": "..."}
-  ],
-  "skill_results": [
-    {
-      "result_id": "uuid",
-      "skill_id": "trial_benchmarking",
-      "parameters_used": {},
-      "table_data": [...],
-      "table_columns": [...],
-      "chart_json": null,
-      "timestamp": "..."
-    }
-  ]
-}
-```
-
-### CORS Setup
-
-Since React (port 3000) and Flask (port 5000) are separate origins, add:
+### CORS
 
 ```python
 from flask_cors import CORS
-CORS(app, origins=["http://localhost:3000", "https://your-prod-domain.com"])
+CORS(app, origins=os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(","))
 ```
 
-Install: `pip install flask-cors`
-
-### `GET /`
-
-Remove or keep as a health redirect. React serves its own `index.html`.
+Already configured in `webapp.py`. Set `ALLOWED_ORIGINS` for production.
 
 ---
 
-## 7. Frontend Integration Notes (React)
+## 8. Frontend Integration Notes (React)
 
-### API Layer
+### API Layer — Single Endpoint
 
-Create a typed API client in React to match the Flask contract:
+All calls target `/api/interact`. Create a typed client:
 
 ```typescript
 // src/api/chatApi.ts
 const BASE = process.env.REACT_APP_API_URL ?? "http://localhost:5000";
 
-export async function sendMessage(sessionId: string, message: string) {
-  const res = await fetch(`${BASE}/chat`, {
+async function interact(body: object): Promise<ChatResponse> {
+  const res = await fetch(`${BASE}/api/interact`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
-  });
-  return res.json();   // shape: ChatResponse (see §6)
-}
-
-export async function confirm(sessionId: string, message: string) {
-  const res = await fetch(`${BASE}/confirm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify(body),
   });
   return res.json();
 }
 
-export async function uploadFile(sessionId: string, fileKey: string, file: File) {
+export const sendMessage = (sessionId: string, message: string) =>
+  interact({ session_id: sessionId, action: "message", message });
+
+export const confirm = (sessionId: string, message: string) =>
+  interact({ session_id: sessionId, action: "confirm", message });
+
+export const exportResult = (sessionId: string, resultId: string, dest: string) =>
+  interact({ session_id: sessionId, action: "export", result_id: resultId, export_destination: dest });
+
+export async function uploadFile(sessionId: string, fileKey: string, file: File): Promise<ChatResponse> {
   const fd = new FormData();
   fd.append("session_id", sessionId);
+  fd.append("action", "upload");
   fd.append("file_key", fileKey);
-  fd.append("file", file);
-  const res = await fetch(`${BASE}/upload`, { method: "POST", body: fd });
+  fd.append(fileKey, file);
+  const res = await fetch(`${BASE}/api/interact`, { method: "POST", body: fd });
   return res.json();
 }
 
-export async function exportResult(sessionId: string, resultId: string, tableName: string) {
-  const res = await fetch(`${BASE}/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, result_id: resultId, table_name: tableName }),
-  });
-  return res.json();
+export const getSessionHistory = (sessionId: string) =>
+  fetch(`${BASE}/sessions/${sessionId}/history`).then(r => r.json());
+```
+
+### TypeScript Types
+
+```typescript
+// src/api/types.ts
+interface DownloadableFile {
+  filename: string;
+  content_type: string;
+  data_base64: string;
+  description: string;
 }
 
-export async function getSessionHistory(sessionId: string) {
-  const res = await fetch(`${BASE}/sessions/${sessionId}/history`);
-  return res.json();
+interface ChatResponse {
+  session_id: string;
+  action: string;
+  success: boolean;
+  message: string;
+  fsm_state: "idle" | "parameter_gathering" | "confirmation_pending" | "analysis_planning";
+  active_skill: string | null;
+  skill_id: string | null;
+  result_id: string | null;
+  table_data: Record<string, unknown>[] | null;
+  table_columns: string[] | null;
+  chart_json: object | null;
+  downloadable_files: DownloadableFile[];
+  uploaded_file_metadata: object | null;
+  error: string | null;
 }
 ```
 
 ### Session ID Management
-
-The existing backend creates sessions lazily when the first `/chat` call arrives with an unknown `session_id`. React should:
-1. Generate a `session_id` with `crypto.randomUUID()` on new chat start.
-2. Persist it in `localStorage` to survive page refreshes.
-3. On "New Chat" action, clear localStorage and generate a new ID.
-4. Pass the stored ID on every API call.
 
 ```typescript
 function getOrCreateSessionId(): string {
@@ -743,56 +811,71 @@ function getOrCreateSessionId(): string {
   }
   return id;
 }
+
+function startNewSession(): string {
+  const id = crypto.randomUUID();
+  localStorage.setItem("session_id", id);
+  return id;
+}
 ```
 
 ### Confirmation Flow
 
-The existing backend sets `fsm_state: "confirmation_pending"` when it needs the user to confirm parameters. React must detect this and render a confirmation UI:
+When `fsm_state === "confirmation_pending"` the bot has all parameters and is asking the user to confirm:
 
 ```typescript
-// In your chat reducer / component:
 if (response.fsm_state === "confirmation_pending") {
-  // Show inline yes/no/edit buttons instead of free-text input
-  setConfirmationMode(true);
+  setConfirmationMode(true);   // render Yes / Edit buttons
 }
 
-// On "Yes" button click:
-await confirm(sessionId, "yes");
+// "Yes" button:
+const resp = await confirm(sessionId, "yes");
 
-// On "Edit" button click:
-setConfirmationMode(false);   // Let user type free-form edit request
+// "Edit" button — let user retype the parameters:
+setConfirmationMode(false);    // back to free-text input
 ```
 
-The current vanilla JS implementation in `frontend/static/js/confirm_dialog.js` is a direct reference for this behaviour.
+### File Downloads
 
-### Bokeh Charts in React
+`downloadable_files` is automatically populated when a skill returns table data. Decode and trigger a browser download:
 
-The backend returns Bokeh chart data as `chart_json` in the response — a Bokeh JSON item produced by `json_item(figure)`. Rendering requires the Bokeh JS library:
+```typescript
+function downloadFile(f: DownloadableFile) {
+  const bytes = atob(f.data_base64);
+  const blob = new Blob(
+    [Uint8Array.from(bytes, c => c.charCodeAt(0))],
+    { type: f.content_type }
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = f.filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+```
 
-**Option 1 — CDN script tag in `public/index.html`:**
+### Bokeh Charts
+
+`chart_json` is a Bokeh JSON item. Load Bokeh from CDN and embed:
+
 ```html
+<!-- public/index.html -->
 <script src="https://cdn.bokeh.org/bokeh/release/bokeh-3.x.x.min.js"></script>
 ```
 
-**Option 2 — React component wrapping Bokeh embed:**
 ```tsx
 // src/components/BokehChart.tsx
-import { useEffect, useRef } from "react";
+declare const Bokeh: any;
 
-declare const Bokeh: any;   // Bokeh loaded via CDN
-
-interface Props { chartJson: object; chartId: string; }
-
-export function BokehChart({ chartJson, chartId }: Props) {
+export function BokehChart({ chartJson, chartId }: { chartJson: object; chartId: string }) {
   const ref = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     if (ref.current && chartJson) {
-      ref.current.innerHTML = "";    // clear previous render
+      ref.current.innerHTML = "";
       Bokeh.embed.embed_item(chartJson, chartId);
     }
   }, [chartJson, chartId]);
-
   return <div id={chartId} ref={ref} />;
 }
 ```
@@ -804,109 +887,129 @@ Usage:
 )}
 ```
 
-### File Upload UI
-
-React file inputs must `POST` to `/upload` as `multipart/form-data`. The response returns `columns` so the UI can confirm what was parsed. Two upload slots exist:
-- `file_key: "site_file"` — CRO site list CSV/Excel
-- `file_key: "protocol_file"` — Protocol PDF/DOCX
-
 ### Table Rendering
 
-`table_data` is a `list[dict]` and `table_columns` is a `list[str]`. Use any React table library (TanStack Table, AG Grid, etc.) to render:
-
 ```tsx
-{response.table_data && (
+{response.table_data && response.table_columns && (
   <DataTable columns={response.table_columns} rows={response.table_data} />
 )}
 ```
 
+### File Uploads
+
+Two upload types are accepted:
+- `file_key: "site_file"` — CRO site list CSV/Excel (triggers `cro_site_profiling` skill)
+- `file_key: "protocol_file"` — Protocol PDF/DOCX (triggers `protocol_analysis` skill)
+
+```tsx
+<input type="file" onChange={e => {
+  const file = e.target.files?.[0];
+  if (file) uploadFile(sessionId, "site_file", file).then(setResponse);
+}} />
+```
+
 ### Session History Page
 
-Use `GET /sessions?user_id=<id>` to list prior sessions, then `GET /sessions/<id>/history` to reload a past conversation. On reload:
-1. Set `session_id` in localStorage to the selected session ID.
-2. Replay `messages` into the chat window in order.
-3. Re-render any `skill_results` that have `table_data` or `chart_json`.
+```typescript
+// List past sessions for a user
+const { sessions } = await fetch(`${BASE}/sessions?user_id=${userId}`).then(r => r.json());
+
+// Load a specific session
+const { messages } = await getSessionHistory(selectedSessionId);
+// Replay messages into chat window in order
+// Re-render table_data / chart_json from stored skill_results
+```
 
 ---
 
-## 8. Configuration & Environment Variables
-
-Remove all Dataiku environment variables. Add:
+## 9. Configuration & Environment Variables
 
 ```bash
-# LLM
-ANTHROPIC_API_KEY=sk-ant-...          # if using Claude
-OPENAI_API_KEY=sk-...                  # if using OpenAI
+# LLM (pick one)
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
 
 # Snowflake
-SNOWFLAKE_ACCOUNT=xy12345.us-east-1   # <account>.<region>
+SNOWFLAKE_ACCOUNT=xy12345.us-east-1
 SNOWFLAKE_USER=svc_chatapp
 SNOWFLAKE_PASSWORD=...
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=CLINICAL_ANALYTICS
 SNOWFLAKE_SCHEMA=CHATAPP
 
+# Flask
+FLASK_SECRET_KEY=change-me-in-prod
+ALLOWED_ORIGINS=https://your-react-app.com
+
 # Web Search (optional)
 SERPAPI_KEY=...
+
+# React
+REACT_APP_API_URL=https://your-flask-api.com
 ```
 
-Update `config/llm_config.yaml`:
+`config/llm_config.yaml`:
 
 ```yaml
 llm_mesh:
   model: "claude-sonnet-4-6"
-  # ... temperatures unchanged
+  temperature_classify: 0.1
+  temperature_extract: 0.1
+  temperature_agents: 0.3
+  temperature_deterministic: 0.0
+  max_tokens: 16384
+  context_window_turns: 10
 
 data_sources:
-  ctms_table: "CTMS_SITES"
-  citeline_table: "CITELINE_TRIALS"
-  reforecast_table: "REFORECAST_DATA"
-
-serp_api:
-  api_key: "${SERPAPI_KEY}"
-  enabled: false
+  ctms_dataset: "CTMS_DATASET_JOIN_ISSUE_DATASET"
+  citeline_dataset: "CITELINE_DATA"
+  reforecast_dataset: "REFORECAST"
 ```
 
 ---
 
-## 9. Migration Checklist
+## 10. Migration Checklist
 
 ### Backend
 
-- [ ] Replace `backend/llm/llm_client.py` with Anthropic or OpenAI implementation (§3)
-- [ ] Create `backend/data/snowflake_client.py` (§4)
-- [ ] Create Snowflake tables: `chat_sessions`, `chat_messages`, `skill_results`, and the three reference data tables (§4, §5)
-- [ ] Load reference data (CTMS, Citeline, Reforecast) into Snowflake
-- [ ] Update `CROSiteProfilingAgent.__init__` to accept `snowflake_client` (§4)
-- [ ] Update `TrialBenchmarkingAgent._load_citeline()` to use Snowflake (§4)
-- [ ] Update `ReforecastingAgent._load_reforecast()` to use Snowflake with parameterized query (§4)
-- [ ] Update `/export` endpoint in `webapp.py` to write to Snowflake (§4)
-- [ ] Replace `backend/state/session_store.py` with persistent implementation (§5)
-- [ ] Wire `session_store.append_message()` calls in orchestrator (§5)
-- [ ] Wire `session_store.append_skill_result()` calls in orchestrator after skill execution (§5)
-- [ ] Add `GET /sessions` and `GET /sessions/<id>/history` endpoints to `webapp.py` (§6)
-- [ ] Add `flask-cors` and configure allowed origins (§6)
-- [ ] Update `build_router()` in `router.py` to pass `snowflake_client` (§4)
+- [ ] Replace `backend/llm/llm_client.py` with Anthropic or OpenAI implementation (§4)
+- [ ] Create `backend/data/snowflake_client.py` (§5)
+- [ ] Create Snowflake tables: `chat_sessions`, `chat_messages`, `skill_results` (§6)
+- [ ] Load reference data into Snowflake: CTMS sites, Citeline trials, Reforecast data (§5)
+- [ ] Update `CROSiteProfilingAgent._load_ctms()` to call `snowflake_client.query_to_df()` (§5)
+- [ ] Update `TrialBenchmarkingAgent._load_citeline_df()` to call Snowflake — `CompetitiveIntelligenceAgent` inherits the fix (§5)
+- [ ] Update `ReforecastingAgent._load_reforecast()` to use parameterized Snowflake query (§5)
+- [ ] Update `Router.__init__` to accept and pass `snowflake_client` to data-dependent agents (§5)
+- [ ] Add Snowflake write to `ChatBackend._handle_export()` (§5)
+- [ ] Replace `backend/state/session_store.py` with `SnowflakeSessionStore` (§6)
+- [ ] Wire `session_store.append_message()` in orchestrator after each turn (§6)
+- [ ] Wire `session_store.append_skill_result()` in orchestrator after each skill execution (§6)
+- [ ] Add `GET /sessions` and `GET /sessions/<session_id>/history` to `webapp.py` (§7)
+- [ ] Confirm `ALLOWED_ORIGINS` env var is set for production CORS (§7)
 - [ ] Remove `dataiku` from `requirements.txt`; add `snowflake-connector-python[pandas]`, `anthropic` or `openai`, `flask-cors`
-- [ ] Set environment variables (§8)
+- [ ] Set all environment variables (§9)
 
 ### Frontend (React)
 
-- [ ] Create `src/api/chatApi.ts` typed API client (§7)
-- [ ] Implement session ID generation and localStorage persistence (§7)
-- [ ] Implement `confirmation_pending` state detection and Yes/No/Edit UI (§7)
-- [ ] Add Bokeh JS to `public/index.html` and create `BokehChart` component (§7)
-- [ ] Implement file upload for `site_file` and `protocol_file` (§7)
-- [ ] Implement table rendering for `table_data` / `table_columns` (§7)
-- [ ] Build session history page using `GET /sessions` and `GET /sessions/<id>/history` (§7)
-- [ ] Set `REACT_APP_API_URL` in `.env` (§7, §8)
+- [ ] Create `src/api/chatApi.ts` using `/api/interact` unified endpoint (§8)
+- [ ] Define `ChatResponse` TypeScript interface (§8)
+- [ ] Implement session ID generation and `localStorage` persistence (§8)
+- [ ] Handle `confirmation_pending` state — render Yes/Edit buttons (§8)
+- [ ] Handle `downloadable_files` — decode base64 and trigger browser download (§8)
+- [ ] Add Bokeh JS to `public/index.html` and create `BokehChart` component (§8)
+- [ ] Implement file upload for `site_file` and `protocol_file` (§8)
+- [ ] Render `table_data` / `table_columns` using a table component (§8)
+- [ ] Build session history page using `/sessions` and `/sessions/<id>/history` (§8)
+- [ ] Set `REACT_APP_API_URL` in `.env.production` (§9)
 
 ### Testing
 
-- [ ] Smoke test each agent end-to-end with Snowflake data loaded
+- [ ] Smoke-test each of the 8 skills end-to-end with Snowflake data loaded
 - [ ] Verify session persists across process restart (Snowflake store)
-- [ ] Verify session history loads correctly in React
-- [ ] Verify Bokeh chart renders in React with `embed_item`
+- [ ] Verify `competitive_intelligence` skill correctly filters for not-yet-started trials
+- [ ] Verify session history loads and replays correctly in React
+- [ ] Verify Bokeh chart renders in React via `embed_item`
 - [ ] Verify file upload parses correctly and populates session state
-- [ ] Verify confirmation flow (yes/no/edit) behaves correctly end-to-end
-- [ ] Verify `/export` writes a valid Snowflake table
+- [ ] Verify confirmation flow (yes/no/edit) end-to-end
+- [ ] Verify `/export` writes a valid Snowflake table and returns a `DownloadableFile`
+- [ ] Verify CORS headers are correct from React origin in production
