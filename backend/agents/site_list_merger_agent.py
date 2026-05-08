@@ -10,6 +10,7 @@ For matched sites, calculates performance metrics from the CTMS dataset:
   - Avg Enrolled: average of the ENROLLED column across all rows for that site
   - Median Months Diff: median of the MONTHS_DIFF column across all rows for that site
   - % Non-Enrolling Trials: % of rows for that site where randomized patients == 0
+  - Trial Experience: total number of rows (trials) for that site
 
 Performance notes
 -----------------
@@ -241,7 +242,7 @@ class CROSiteProfilingAgent(BaseAgent):
         ctms_df: pd.DataFrame,
         id_col: str | None,
     ) -> dict:
-        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff, pct_non_enrolling}."""
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff, pct_non_enrolling, trial_experience}."""
         col_lower = {c.lower(): c for c in ctms_df.columns}
         enrolled_col    = col_lower.get("enrolled")
         months_diff_col = col_lower.get("months_diff")
@@ -275,12 +276,14 @@ class CROSiteProfilingAgent(BaseAgent):
 
             # % non-enrolling: rows where randomized == 0 / total rows per site
             # Computed independently so it works even when agg_cols is empty.
+            # Trial experience = row count per site (computed once, reused below)
+            trial_counts = ctms_df.groupby(id_col).size()
+
             non_enrolling_pct: pd.Series | None = None
             if randomized_col:
-                is_zero     = ctms_df[randomized_col].eq(0)    # NaN → False, not counted
-                zero_count  = is_zero.groupby(ctms_df[id_col]).sum()
-                total_count = ctms_df.groupby(id_col).size()
-                non_enrolling_pct = (zero_count / total_count * 100).round(1)
+                is_zero    = ctms_df[randomized_col].eq(0)    # NaN → False, not counted
+                zero_count = is_zero.groupby(ctms_df[id_col]).sum()
+                non_enrolling_pct = (zero_count / trial_counts * 100).round(1)
 
             lookup: dict[int, dict] = {}
             for c_idx in ctms_df.index:
@@ -299,6 +302,8 @@ class CROSiteProfilingAgent(BaseAgent):
                     pct = non_enrolling_pct.loc[site_id_val]
                     if pd.notna(pct):
                         m["pct_non_enrolling"] = float(pct)
+                if site_id_val in trial_counts.index:
+                    m["trial_experience"] = int(trial_counts.loc[site_id_val])
                 lookup[c_idx] = m
         else:
             # No site ID column — per-row values only; % non-enrolling requires grouping
@@ -490,8 +495,9 @@ class CROSiteProfilingAgent(BaseAgent):
             f"- **Step 2** (address + city, JW > {STEP2_THRESHOLD}): **{n_step2}** additional matches\n"
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
             f"- **Unmatched: {n_unmatched}**\n\n"
-            f"For matched sites, **Avg Enrolled**, **Median Months Diff**, and "
-            f"**% Non-Enrolling Trials** are calculated from all rows of the matched site in the CTMS dataset."
+            f"For matched sites, **Avg Enrolled**, **Median Months Diff**, "
+            f"**% Non-Enrolling Trials**, and **Trial Experience** are calculated "
+            f"from all rows of the matched site in the CTMS dataset."
         )
 
         # --- Build result table ---
@@ -519,6 +525,7 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Avg Enrolled":           metrics.get("avg_enrolled", ""),
                     "Median Months Diff":     metrics.get("median_months_diff", ""),
                     "% Non-Enrolling Trials": metrics.get("pct_non_enrolling", ""),
+                    "Trial Experience":       metrics.get("trial_experience", ""),
                 })
             else:
                 table_data.append({
@@ -532,12 +539,13 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Avg Enrolled":           "",
                     "Median Months Diff":     "",
                     "% Non-Enrolling Trials": "",
+                    "Trial Experience":       "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
-            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials",
+            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials", "Trial Experience",
         ]
 
         return AgentResult(
