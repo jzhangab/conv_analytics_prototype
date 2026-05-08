@@ -17,6 +17,7 @@ VALID_INTENTS = {
     "site_list_matching",
     "cro_site_profiling",
     "trial_benchmarking",
+    "competitive_intelligence",
     "drug_reimbursement",
     "enrollment_forecasting",
     "data_reasoning",

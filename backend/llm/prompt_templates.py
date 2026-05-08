@@ -19,6 +19,7 @@ Available skills:
 6. protocol_analysis — The user wants to upload and analyze a clinical trial protocol document to identify study design improvements, weaknesses, or recommendations. Keywords: analyze protocol, review protocol, protocol feedback, study design review, protocol assessment, upload protocol, protocol improvements, check my protocol.
 7. country_ranking — The user wants to rank or compare countries by their experience, capability, or suitability for running clinical trials in a specific indication. Keywords: rank countries, country selection, site selection by country, which countries, best countries for trials, country feasibility, global trial landscape, country experience, where to run trials.
 8. reforecasting — The user wants to view or plot reforecast enrollment data for a specific protocol. They will provide a protocol ID/number. Keywords: reforecast, reforecasting, protocol forecast, protocol enrollment, show reforecast, plot reforecast, protocol number, enrollment reforecast, updated forecast.
+9. competitive_intelligence — The user wants to identify or analyse competitor trials that have not yet started for a given indication, phase, and age group. Focus is on upcoming/planned trials, not historical benchmarks. Keywords: competitive intelligence, upcoming trials, not yet started, competitor trials, competitive landscape, pipeline trials, planned trials, who else is running trials, what trials are coming, future competition.
 
 Return a JSON object with exactly these fields:
 {
@@ -81,6 +82,7 @@ CLARIFICATION_MESSAGE = """I wasn't quite sure which of my capabilities you need
 5. **Protocol Analysis** — Upload a clinical trial protocol (PDF, DOCX, or TXT) for a detailed study design review and improvement recommendations
 6. **Country Ranking** — Rank countries by their experience and capability in executing trials for a given indication
 7. **Enrollment Reforecasting** — View reforecast enrollment curves for a specific protocol (provide a protocol ID)
+8. **Competitive Intelligence** — Identify upcoming competitor trials (not yet started) for a given indication, phase, and age group
 
 Which would you like to use? You can describe what you need or pick a number."""
 
@@ -167,6 +169,41 @@ Citeline Database Query Results:
 {data_context}
 {web_context}
 Interpret these results and return the benchmark JSON."""
+
+
+# ---------------------------------------------------------------------------
+# Subagent: Competitive Intelligence
+# ---------------------------------------------------------------------------
+
+COMPETITIVE_INTELLIGENCE_SYSTEM = """You are an expert clinical development strategist specialising in competitive intelligence. You will be given data on upcoming clinical trials (not yet started) from the Citeline database for a specific indication, phase, and age group. Use these as the primary source of truth; do not contradict the numeric data.
+
+Your goal is to help the user understand the competitive landscape they are about to enter — how many competitors are positioning, at what scale, and what risks they pose.
+
+Return a JSON object — keep all string values concise (1 sentence each, max 2 sentences for benchmark_summary):
+{
+  "benchmark_summary": "<1-2 sentence summary of the competitive landscape>",
+  "key_metrics": {
+    "upcoming_trial_count": <int>,
+    "median_planned_sites": <float or null>,
+    "median_planned_patients": <float or null>,
+    "sponsors_represented": <int or null>
+  },
+  "notable_patterns": ["<max 3 short bullets about trial design or sponsor patterns>"],
+  "key_challenges": ["<max 3 short bullets about competitive risks or recruitment competition>"],
+  "data_source": "<one sentence>",
+  "caveats": "<one sentence>"
+}
+
+Return ONLY the JSON object, no markdown fences, no other text."""
+
+COMPETITIVE_INTELLIGENCE_USER = """Indication: {indication}
+Age Group: {age_group}
+Trial Phase: {phase}
+
+Upcoming Trials (Not Yet Started) — Citeline Database Query Results:
+{data_context}
+{web_context}
+Analyse the competitive landscape and return the competitive intelligence JSON."""
 
 
 # ---------------------------------------------------------------------------

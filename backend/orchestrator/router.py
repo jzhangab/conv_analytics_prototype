@@ -3,6 +3,7 @@ Routes confirmed intents to the appropriate SubAgent instance.
 """
 from __future__ import annotations
 from backend.agents.base_agent import BaseAgent
+from backend.agents.competitive_intelligence_agent import CompetitiveIntelligenceAgent
 from backend.agents.country_ranking_agent import CountryRankingAgent
 from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent
@@ -27,14 +28,16 @@ class Router:
             (config or {}).get("data_sources", {}).get("reforecast_dataset", "REFORECAST")
         )
         self._registry: dict[str, BaseAgent] = {
-            "cro_site_profiling":   CROSiteProfilingAgent(llm_client, dataset_name=ctms_dataset),
-            "trial_benchmarking":   TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset,
-                                                           web_search=web_search),
-            "drug_reimbursement":   DrugReimbursementAgent(llm_client, web_search=web_search),
-            "enrollment_forecasting": EnrollmentForecastingAgent(llm_client, web_search=web_search),
-            "protocol_analysis":    ProtocolAnalysisAgent(llm_client, web_search=web_search),
-            "country_ranking":     CountryRankingAgent(llm_client, web_search=web_search),
-            "reforecasting":       ReforecastingAgent(dataset_name=reforecast_dataset),
+            "cro_site_profiling":      CROSiteProfilingAgent(llm_client, dataset_name=ctms_dataset),
+            "trial_benchmarking":      TrialBenchmarkingAgent(llm_client, dataset_name=citeline_dataset,
+                                                              web_search=web_search),
+            "competitive_intelligence": CompetitiveIntelligenceAgent(llm_client, dataset_name=citeline_dataset,
+                                                                      web_search=web_search),
+            "drug_reimbursement":      DrugReimbursementAgent(llm_client, web_search=web_search),
+            "enrollment_forecasting":  EnrollmentForecastingAgent(llm_client, web_search=web_search),
+            "protocol_analysis":       ProtocolAnalysisAgent(llm_client, web_search=web_search),
+            "country_ranking":         CountryRankingAgent(llm_client, web_search=web_search),
+            "reforecasting":           ReforecastingAgent(dataset_name=reforecast_dataset),
         }
 
     def get_agent(self, skill_id: str) -> BaseAgent | None:

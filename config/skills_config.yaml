@@ -183,3 +183,39 @@ skills:
         label: "Protocol Document"
         description: "Clinical trial protocol as a PDF, DOCX, or TXT file"
         data_type: file
+
+  competitive_intelligence:
+    display_name: "Competitive Intelligence"
+    description: >
+      Identifies upcoming competitor trials that have not yet started for a given indication,
+      age group, and phase using the Citeline dataset. Helps assess competitive recruitment
+      pressure and pipeline density before committing to a study design.
+    required_parameters:
+      - name: indication
+        label: "Indication"
+        description: "Therapeutic area or specific disease (e.g., NSCLC, Type 2 Diabetes)"
+        data_type: string
+      - name: age_group
+        label: "Age Group"
+        description: "Target patient population age bracket"
+        data_type: choice
+        choices:
+          - pediatric
+          - adult
+          - elderly
+          - all-comers
+        aliases:
+          pediatric: ["children", "child", "kids", "paediatric", "<18", "under 18"]
+          adult: ["adults", "adult patients", "18+", "18-65"]
+          elderly: ["elderly", "geriatric", "seniors", ">65", "over 65"]
+          all-comers: ["all ages", "all comers", "any age", "mixed"]
+      - name: phase
+        label: "Trial Phase"
+        description: "Clinical trial phase"
+        data_type: choice
+        choices:
+          - "Phase 1"
+          - "Phase 2"
+          - "Phase 3"
+          - "Phase 1/2"
+          - "Phase 2/3"
