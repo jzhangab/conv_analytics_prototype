@@ -8,7 +8,7 @@ Column mapping is inferred via LLM reasoning on column names.
 
 For matched sites, calculates performance metrics from the CTMS dataset:
   - Avg Enrolled: average of the ENROLLED column across all rows for that site
-  - Avg Months Diff: average of the MONTHS_DIFF column across all rows for that site
+  - Median Months Diff: median of the MONTHS_DIFF column across all rows for that site
 
 Performance notes
 -----------------
@@ -27,7 +27,7 @@ Module-level caches (persist for the lifetime of the backend process):
   _col_inference_cache — LLM column-mapping result, keyed by frozenset of column names
   _ctms_keys_cache     — pre-built JW matching keys + city index, keyed by
                          (dataset, name_col, city_col, addr_col)
-  _ctms_metrics_cache  — pre-aggregated {site_id: {avg_enrolled, avg_months_diff}},
+  _ctms_metrics_cache  — pre-aggregated {site_id: {avg_enrolled, median_months_diff}},
                          keyed by (dataset, id_col, enrolled_col, months_diff_col)
 
 Call CROSiteProfilingAgent.clear_caches() to invalidate all caches (e.g. after the
@@ -71,7 +71,7 @@ _col_inference_cache: dict[frozenset, dict] = {}
 _ctms_keys_cache: dict[tuple, dict] = {}
 
 # (dataset_name, id_col, enrolled_col, months_diff_col)
-#   -> {ctms_idx: {"avg_enrolled": float, "avg_months_diff": float}}
+#   -> {ctms_idx: {"avg_enrolled": float, "median_months_diff": float}}
 _ctms_metrics_cache: dict[tuple, dict] = {}
 
 
@@ -240,7 +240,7 @@ class CROSiteProfilingAgent(BaseAgent):
         ctms_df: pd.DataFrame,
         id_col: str | None,
     ) -> dict:
-        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, avg_months_diff}."""
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff}."""
         col_lower = {c.lower(): c for c in ctms_df.columns}
         enrolled_col = col_lower.get("enrolled")
         months_diff_col = col_lower.get("months_diff")
@@ -260,7 +260,7 @@ class CROSiteProfilingAgent(BaseAgent):
             if enrolled_col:
                 agg_cols[enrolled_col] = "mean"
             if months_diff_col:
-                agg_cols[months_diff_col] = "mean"
+                agg_cols[months_diff_col] = "median"
 
             grouped = ctms_df.groupby(id_col, dropna=False).agg(agg_cols)
             lookup: dict[int, dict] = {}
@@ -274,7 +274,7 @@ class CROSiteProfilingAgent(BaseAgent):
                 if enrolled_col and pd.notna(grp[enrolled_col]):
                     m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
                 if months_diff_col and pd.notna(grp[months_diff_col]):
-                    m["avg_months_diff"] = round(float(grp[months_diff_col]), 2)
+                    m["median_months_diff"] = round(float(grp[months_diff_col]), 2)
                 lookup[c_idx] = m
         else:
             lookup = {}
@@ -286,7 +286,7 @@ class CROSiteProfilingAgent(BaseAgent):
                     m["avg_enrolled"] = round(float(val), 2) if pd.notna(val) else ""
                 if months_diff_col is not None:
                     val = row[months_diff_col]
-                    m["avg_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
+                    m["median_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
                 lookup[c_idx] = m
 
         logger.info("Pre-aggregated site metrics for dataset '%s'; caching.", self.dataset_name)
@@ -465,7 +465,7 @@ class CROSiteProfilingAgent(BaseAgent):
             f"- **Step 2** (address + city, JW > {STEP2_THRESHOLD}): **{n_step2}** additional matches\n"
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
             f"- **Unmatched: {n_unmatched}**\n\n"
-            f"For matched sites, **Avg Enrolled** and **Avg Months Diff** are calculated "
+            f"For matched sites, **Avg Enrolled** and **Median Months Diff** are calculated "
             f"from all rows of the matched site in the CTMS dataset."
         )
 
@@ -492,7 +492,7 @@ class CROSiteProfilingAgent(BaseAgent):
                     "JW Score":           match["score"],
                     "Match Step":         match["step"],
                     "Avg Enrolled":       metrics.get("avg_enrolled", ""),
-                    "Avg Months Diff":    metrics.get("avg_months_diff", ""),
+                    "Median Months Diff":    metrics.get("median_months_diff", ""),
                 })
             else:
                 table_data.append({
@@ -504,13 +504,13 @@ class CROSiteProfilingAgent(BaseAgent):
                     "JW Score":           "",
                     "Match Step":         "",
                     "Avg Enrolled":       "",
-                    "Avg Months Diff":    "",
+                    "Median Months Diff":    "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
-            "Avg Enrolled", "Avg Months Diff",
+            "Avg Enrolled", "Median Months Diff",
         ]
 
         return AgentResult(
