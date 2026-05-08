@@ -195,9 +195,13 @@ def _make_response_renderer(orchestrator, session_id, chat, maybe_show_export):
             rows = resp["table_data"]
             columns = resp.get("table_columns")
             df = pd.DataFrame(rows, columns=columns) if columns else pd.DataFrame(rows)
-            items.append(pn.pane.DataFrame(
-                df, sizing_mode="stretch_width", max_rows=200,
-                styles={"font-size": "12px"},
+            items.append(pn.Column(
+                pn.pane.DataFrame(
+                    df, sizing_mode="stretch_width", max_rows=len(df),
+                    styles={"font-size": "12px"},
+                ),
+                height=800, scroll=True, sizing_mode="stretch_width",
+                styles={"border": "1px solid #e0e0e0", "border-radius": "4px"},
             ))
 
         if resp.get("chart_json"):
