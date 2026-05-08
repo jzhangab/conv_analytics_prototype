@@ -56,6 +56,11 @@ _COL_GUESSES: dict[str, list[str]] = {
                             "study_duration"],
     "enrollment_duration": ["enrollment_duration", "enrollment_duration_months",
                             "recruitment_duration"],
+    "study_design":        ["study_design", "design", "trial_design", "study_type",
+                            "design_type", "trial_type"],
+    "drug":                ["drug", "drug_name", "primary_drug", "investigational_drug",
+                            "treatment", "intervention", "compound", "molecule",
+                            "product", "primary_compound"],
 }
 
 
@@ -229,7 +234,9 @@ class TrialBenchmarkingAgent(BaseAgent):
             "  dropout_rate        — dropout / discontinuation rate (%)\n"
             "  screen_failure_rate — screen failure rate (%)\n"
             "  total_duration      — total trial duration (months)\n"
-            "  enrollment_duration — enrollment period duration (months)\n\n"
+            "  enrollment_duration — enrollment period duration (months)\n"
+            "  study_design        — study/trial design type (e.g. randomised, open-label, crossover)\n"
+            "  drug                — primary investigational drug, compound, or intervention name\n\n"
             "Return ONLY a JSON object mapping role → exact column name. "
             "Omit any role you cannot confidently map. Use only column names that "
             "appear verbatim in the dataset.\n"
@@ -514,6 +521,8 @@ class TrialBenchmarkingAgent(BaseAgent):
             ("Trial ID",               "trial_id"),
             ("Indication",             "indication"),
             ("Phase",                  "phase"),
+            ("Study Design",           "study_design"),
+            ("Drug",                   "drug"),
             ("Age Group",              "age_group"),
             ("Year",                   "year"),
             ("Sites",                  "num_sites"),
