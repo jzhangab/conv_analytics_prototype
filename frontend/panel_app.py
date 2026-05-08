@@ -195,11 +195,18 @@ def _make_response_renderer(orchestrator, session_id, chat, maybe_show_export):
             rows = resp["table_data"]
             columns = resp.get("table_columns")
             df = pd.DataFrame(rows, columns=columns) if columns else pd.DataFrame(rows)
+            _TABLE_CSS = (
+                "<style>"
+                ".ca-tbl{border-collapse:collapse;font-size:12px;width:100%;}"
+                ".ca-tbl th{background:#f5f5f5;padding:6px 10px;border:1px solid #d0d0d0;"
+                "text-align:left;white-space:nowrap;font-weight:600;}"
+                ".ca-tbl td{padding:5px 10px;border:1px solid #e8e8e8;vertical-align:top;}"
+                ".ca-tbl tr:nth-child(even) td{background:#fafafa;}"
+                "</style>"
+            )
+            html = df.to_html(index=False, border=0, classes=["ca-tbl"])
             items.append(pn.Column(
-                pn.pane.DataFrame(
-                    df, sizing_mode="stretch_width", max_rows=len(df),
-                    styles={"font-size": "12px"},
-                ),
+                pn.pane.HTML(_TABLE_CSS + html, sizing_mode="stretch_width"),
                 height=800, scroll=True, sizing_mode="stretch_width",
                 styles={"border": "1px solid #e0e0e0", "border-radius": "4px"},
             ))
