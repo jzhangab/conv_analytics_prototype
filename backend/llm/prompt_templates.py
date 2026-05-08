@@ -499,6 +499,26 @@ Extract all clinically meaningful content from this chunk. Preserve specifics �
 
 
 # ---------------------------------------------------------------------------
+# Subagent: Protocol Analysis — Synthesis (reduce phase)
+# Used when the document was too long for a single call.
+# Input is the concatenated structured extractions from all chunks, not raw text.
+# ---------------------------------------------------------------------------
+
+PROTOCOL_SYNTHESIS_USER = """Protocol filename: {filename}
+
+The protocol was too long to analyse in a single pass. The text below is a structured
+extraction of all clinically meaningful content, assembled from {num_chunks} sequential
+chunk(s) of the original document. All section headings, criteria, endpoints, statistical
+parameters, and numeric thresholds have been preserved from the source.
+
+Extracted protocol content:
+{protocol_text}
+
+Perform a comprehensive study design review of the full protocol based on this extracted
+content and return the analysis JSON."""
+
+
+# ---------------------------------------------------------------------------
 # Subagent: Protocol Analysis — TOC extraction (legacy, not used)
 # ---------------------------------------------------------------------------
 
