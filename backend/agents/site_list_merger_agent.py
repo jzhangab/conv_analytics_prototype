@@ -11,6 +11,8 @@ For matched sites, calculates performance metrics from the CTMS dataset:
   - Median Months Diff: median of the MONTHS_DIFF column across all rows for that site
   - % Non-Enrolling Trials: % of rows for that site where randomized patients == 0
   - Trial Experience: total number of rows (trials) for that site
+  - Screen Failure Rate: median across all rows for that site of (SCREENFAILED/SCREENED*100);
+    rows where SCREENED is 0 or NaN count as 1.0 (i.e. 100%)
 
 Performance notes
 -----------------
@@ -242,21 +244,25 @@ class CROSiteProfilingAgent(BaseAgent):
         ctms_df: pd.DataFrame,
         id_col: str | None,
     ) -> dict:
-        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff, pct_non_enrolling, trial_experience}."""
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff, pct_non_enrolling, trial_experience, screen_failure_rate}."""
         col_lower = {c.lower(): c for c in ctms_df.columns}
-        enrolled_col    = col_lower.get("enrolled")
-        months_diff_col = col_lower.get("months_diff")
+        enrolled_col     = col_lower.get("enrolled")
+        months_diff_col  = col_lower.get("months_diff")
+        screened_col     = col_lower.get("screened")
+        screenfailed_col = col_lower.get("screenfailed") or col_lower.get("screen_failed")
         # Accept any column whose name contains "random" (e.g. randomized, randomized_patients)
-        randomized_col  = next(
+        randomized_col   = next(
             (c for lower, c in sorted(col_lower.items()) if "random" in lower), None
         )
 
-        cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col, randomized_col)
+        cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col,
+                     randomized_col, screened_col, screenfailed_col)
         if cache_key in _ctms_metrics_cache:
             logger.info("Site metrics cache hit.")
             return _ctms_metrics_cache[cache_key]
 
-        if enrolled_col is None and months_diff_col is None and randomized_col is None:
+        if enrolled_col is None and months_diff_col is None and randomized_col is None \
+                and screened_col is None and screenfailed_col is None:
             logger.warning("CTMS dataset has no recognised metric columns; skipping metrics.")
             _ctms_metrics_cache[cache_key] = {}
             return {}
@@ -285,6 +291,17 @@ class CROSiteProfilingAgent(BaseAgent):
                 zero_count = is_zero.groupby(ctms_df[id_col]).sum()
                 non_enrolling_pct = (zero_count / trial_counts * 100).round(1)
 
+            # Screen failure rate per row: SCREENFAILED / SCREENED * 100.
+            # Rows where SCREENED is 0 or NaN default to 1.0 (100%).
+            # Aggregated metric = median of per-row rates for each site.
+            screen_failure_median: pd.Series | None = None
+            if screened_col and screenfailed_col:
+                screened_vals    = pd.to_numeric(ctms_df[screened_col],    errors="coerce")
+                screenfailed_vals = pd.to_numeric(ctms_df[screenfailed_col], errors="coerce")
+                screened_safe    = screened_vals.where(screened_vals > 0)  # 0 → NaN
+                per_row_rate     = (screenfailed_vals / screened_safe).fillna(1.0) * 100
+                screen_failure_median = per_row_rate.groupby(ctms_df[id_col]).median().round(1)
+
             lookup: dict[int, dict] = {}
             for c_idx in ctms_df.index:
                 site_id_val = ctms_df.at[c_idx, id_col]
@@ -304,6 +321,10 @@ class CROSiteProfilingAgent(BaseAgent):
                         m["pct_non_enrolling"] = float(pct)
                 if site_id_val in trial_counts.index:
                     m["trial_experience"] = int(trial_counts.loc[site_id_val])
+                if screen_failure_median is not None and site_id_val in screen_failure_median.index:
+                    sfr = screen_failure_median.loc[site_id_val]
+                    if pd.notna(sfr):
+                        m["screen_failure_rate"] = float(sfr)
                 lookup[c_idx] = m
         else:
             # No site ID column — per-row values only; % non-enrolling requires grouping
@@ -317,6 +338,13 @@ class CROSiteProfilingAgent(BaseAgent):
                 if months_diff_col is not None:
                     val = row[months_diff_col]
                     m["median_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
+                if screened_col is not None and screenfailed_col is not None:
+                    screened_val    = pd.to_numeric(row.get(screened_col),    errors="coerce")
+                    screenfailed_val = pd.to_numeric(row.get(screenfailed_col), errors="coerce")
+                    if pd.isna(screened_val) or screened_val == 0:
+                        m["screen_failure_rate"] = 100.0
+                    else:
+                        m["screen_failure_rate"] = round(float(screenfailed_val / screened_val * 100), 1)
                 lookup[c_idx] = m
 
         logger.info("Pre-aggregated site metrics for dataset '%s'; caching.", self.dataset_name)
@@ -496,8 +524,8 @@ class CROSiteProfilingAgent(BaseAgent):
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
             f"- **Unmatched: {n_unmatched}**\n\n"
             f"For matched sites, **Avg Enrolled**, **Median Months Diff**, "
-            f"**% Non-Enrolling Trials**, and **Trial Experience** are calculated "
-            f"from all rows of the matched site in the CTMS dataset."
+            f"**% Non-Enrolling Trials**, **Trial Experience**, and **Screen Failure Rate** "
+            f"are calculated from all rows of the matched site in the CTMS dataset."
         )
 
         # --- Build result table ---
@@ -526,6 +554,7 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Median Months Diff":     metrics.get("median_months_diff", ""),
                     "% Non-Enrolling Trials": metrics.get("pct_non_enrolling", ""),
                     "Trial Experience":       metrics.get("trial_experience", ""),
+                    "Screen Failure Rate":    metrics.get("screen_failure_rate", ""),
                 })
             else:
                 table_data.append({
@@ -540,12 +569,13 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Median Months Diff":     "",
                     "% Non-Enrolling Trials": "",
                     "Trial Experience":       "",
+                    "Screen Failure Rate":    "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
-            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials", "Trial Experience",
+            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials", "Trial Experience", "Screen Failure Rate",
         ]
 
         return AgentResult(
