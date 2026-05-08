@@ -220,9 +220,9 @@ def _parse_upload_request() -> tuple[ChatRequest | None, tuple | None]:
     session_id = request.form.get("session_id") or str(uuid.uuid4())
     file_key = request.form.get("file_key", "")
 
-    if file_key not in ("site_file", "protocol_file"):
+    if file_key != "site_file":
         return None, (
-            {"success": False, "error": "file_key must be 'site_file' or 'protocol_file'"}, 400
+            {"success": False, "error": "file_key must be 'site_file'"}, 400
         )
     if file_key not in request.files or not request.files[file_key].filename:
         return None, ({"success": False, "error": "No file provided"}, 400)

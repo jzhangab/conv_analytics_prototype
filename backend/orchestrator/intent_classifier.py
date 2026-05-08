@@ -21,7 +21,6 @@ VALID_INTENTS = {
     "drug_reimbursement",
     "enrollment_forecasting",
     "data_reasoning",
-    "protocol_analysis",
     "country_ranking",
     "reforecasting",
 }

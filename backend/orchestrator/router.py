@@ -7,7 +7,6 @@ from backend.agents.competitive_intelligence_agent import CompetitiveIntelligenc
 from backend.agents.country_ranking_agent import CountryRankingAgent
 from backend.agents.drug_reimbursement_agent import DrugReimbursementAgent
 from backend.agents.enrollment_forecasting_agent import EnrollmentForecastingAgent
-from backend.agents.protocol_analysis_agent import ProtocolAnalysisAgent
 from backend.agents.reforecasting_agent import ReforecastingAgent
 from backend.agents.site_list_merger_agent import CROSiteProfilingAgent, DEFAULT_CTMS_DATASET
 from backend.agents.trial_benchmarking_agent import TrialBenchmarkingAgent, DEFAULT_DATASET
@@ -35,7 +34,6 @@ class Router:
                                                                       web_search=web_search),
             "drug_reimbursement":      DrugReimbursementAgent(llm_client, web_search=web_search),
             "enrollment_forecasting":  EnrollmentForecastingAgent(llm_client, web_search=web_search),
-            "protocol_analysis":       ProtocolAnalysisAgent(llm_client, web_search=web_search),
             "country_ranking":         CountryRankingAgent(llm_client, web_search=web_search),
             "reforecasting":           ReforecastingAgent(dataset_name=reforecast_dataset),
         }

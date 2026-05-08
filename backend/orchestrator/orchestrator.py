@@ -17,7 +17,6 @@ import logging
 import uuid
 from datetime import datetime
 
-from backend.agents.protocol_analysis_agent import parse_protocol_file
 from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.llm.llm_client import LLMClient
 from backend.llm.prompt_templates import (ANALYSIS_PLAN_REVISE_USER,
@@ -78,33 +77,16 @@ class Orchestrator:
     def handle_file_upload(self, session_id: str, file_key: str, file_storage) -> dict:
         state = self.session_store.get_or_create(session_id)
         try:
-            if file_key == "protocol_file":
-                file_info = parse_protocol_file(file_storage)
-                state.uploaded_files[file_key] = file_info
-                fmt = file_info.get("format", "txt")
-                if fmt == "pdf":
-                    size_desc = f"{file_info['total_pages']} pages"
-                else:
-                    size_desc = f"{len(file_info.get('full_text', '')):,} characters"
-                msg = (
-                    f"Protocol uploaded: **{file_info['filename']}** ({size_desc}). "
-                    "Type **\"analyze\"** to run the study design review."
-                )
-                state.add_message("assistant", msg)
-                if state.active_skill is None or state.active_skill == "protocol_analysis":
-                    state.active_skill = "protocol_analysis"
-                    state.fsm_state = FSMState.PARAMETER_GATHERING
-            else:
-                file_info = parse_uploaded_file(file_storage)
-                state.uploaded_files[file_key] = file_info
-                msg = (
-                    f"Site list uploaded: **{file_info['filename']}** "
-                    f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
-                )
-                state.add_message("assistant", msg)
-                if state.active_skill is None or state.active_skill == "cro_site_profiling":
-                    state.active_skill = "cro_site_profiling"
-                    state.fsm_state = FSMState.PARAMETER_GATHERING
+            file_info = parse_uploaded_file(file_storage)
+            state.uploaded_files[file_key] = file_info
+            msg = (
+                f"Site list uploaded: **{file_info['filename']}** "
+                f"({len(file_info['data'])} rows, columns: {', '.join(file_info['columns'])})."
+            )
+            state.add_message("assistant", msg)
+            if state.active_skill is None or state.active_skill == "cro_site_profiling":
+                state.active_skill = "cro_site_profiling"
+                state.fsm_state = FSMState.PARAMETER_GATHERING
 
             return self._build_response(message=msg, state=state)
         except ValueError as e:
@@ -425,7 +407,7 @@ class Orchestrator:
             "trial_benchmarking": "Trial Benchmarking",
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
-            "protocol_analysis": "Protocol Analysis",
+
             "country_ranking": "Country Ranking by Trial Experience",
             "reforecasting": "Enrollment Reforecasting",
         }
@@ -587,7 +569,7 @@ class Orchestrator:
             "trial_benchmarking": "Trial Benchmarking",
             "drug_reimbursement": "Drug Reimbursement Assessment",
             "enrollment_forecasting": "Enrollment Forecasting",
-            "protocol_analysis": "Protocol Analysis",
+
             "country_ranking": "Country Ranking by Trial Experience",
             "reforecasting": "Enrollment Reforecasting",
         }
@@ -635,9 +617,9 @@ class Orchestrator:
             "2": "trial_benchmarking",
             "3": "drug_reimbursement",
             "4": "enrollment_forecasting",
-            "5": "protocol_analysis",
-            "6": "country_ranking",
-            "7": "reforecasting",
+            "5": "country_ranking",
+            "6": "reforecasting",
+            "7": "competitive_intelligence",
         }
         stripped = message.strip().rstrip(".,")
         return skill_by_number.get(stripped)

@@ -21,13 +21,13 @@ class UploadedFile:
     Framework-agnostic file upload.  The Flask adapter converts Werkzeug
     FileStorage objects into this; tests can construct it directly from bytes.
     """
-    file_key: str       # "site_file" | "protocol_file"
+    file_key: str       # "site_file"
     filename: str
     data: bytes
     content_type: str = "application/octet-stream"
 
     # Duck-type compatibility with Werkzeug FileStorage so existing agent
-    # code (parse_uploaded_file, parse_protocol_file) can use this directly.
+    # code (parse_uploaded_file) can use this directly.
     def read(self) -> bytes:
         return self.data
 

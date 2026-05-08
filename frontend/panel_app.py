@@ -16,7 +16,7 @@ from panel.chat import ChatInterface
 
 from backend.agents.site_list_merger_agent import parse_uploaded_file
 from backend.api.models import UploadedFile
-from backend.state.conversation_state import FSMState
+from backend.state.conversation_state import FSMState  # noqa: F401 (used in _on_cro_upload)
 
 
 # =========================================================================
@@ -118,8 +118,6 @@ def _infer_call_label(messages):
     if system.startswith("[citeline filter result]"):     return "Citeline Filter Result"
     if "senior clinical r&d strategist" in system or "data_reasoning" in system:
         return "Data Reasoning"
-    if "senior clinical research expert" in system or "protocol_analysis" in system or "gcp" in system:
-        return "Protocol Analysis"
     if "routing assistant" in system or ("intent" in system and "skill" in system):
         return "Intent Classification"
     if "parameter extraction" in system: return "Parameter Extraction"
@@ -255,133 +253,6 @@ def _make_response_renderer(orchestrator, session_id, chat, maybe_show_export):
 
 
 # =========================================================================
-# Protocol PDF generation
-# =========================================================================
-
-def generate_protocol_pdf(result):
-    """Build a formatted PDF from a protocol analysis result dict."""
-    if result is None:
-        return io.BytesIO(b"No protocol analysis result available.")
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import cm
-        from reportlab.lib import colors
-        from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
-        )
-
-        buf = io.BytesIO()
-        fn = result.get("filename", "protocol")
-        doc = SimpleDocTemplate(
-            buf, pagesize=A4,
-            leftMargin=2 * cm, rightMargin=2 * cm,
-            topMargin=2.5 * cm, bottomMargin=2 * cm,
-            title=f"Protocol Analysis — {fn}",
-        )
-
-        base = getSampleStyleSheet()
-        title_s = ParagraphStyle("PATitle", parent=base["Title"],
-                                 fontSize=18, textColor=colors.HexColor("#1a1a2e"),
-                                 spaceAfter=4)
-        sub_s = ParagraphStyle("PASub", parent=base["Normal"],
-                               fontSize=10, textColor=colors.HexColor("#555"),
-                               spaceAfter=12)
-        h1_s = ParagraphStyle("PAH1", parent=base["Heading1"],
-                              fontSize=13, textColor=colors.HexColor("#1a1a2e"),
-                              spaceBefore=14, spaceAfter=6)
-        h2_s = ParagraphStyle("PAH2", parent=base["Heading2"],
-                              fontSize=11, textColor=colors.HexColor("#333"),
-                              spaceBefore=10, spaceAfter=4)
-        body_s = ParagraphStyle("PABody", parent=base["Normal"],
-                                fontSize=10, leading=14, spaceAfter=3)
-        bullet_s = ParagraphStyle("PABullet", parent=base["Normal"],
-                                  fontSize=10, leading=14, spaceAfter=2,
-                                  leftIndent=14, bulletIndent=4)
-
-        def _md(text):
-            return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-
-        elements = []
-        elements.append(Paragraph("Clinical Trial Protocol Analysis Report", title_s))
-        elements.append(Paragraph(
-            f"Protocol: <b>{fn}</b> &nbsp;&nbsp;&nbsp; "
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            sub_s,
-        ))
-        elements.append(HRFlowable(width="100%", thickness=2,
-                                   color=colors.HexColor("#1a1a2e"), spaceAfter=10))
-
-        for line in result.get("text", "").splitlines():
-            s = line.strip()
-            if not s:
-                elements.append(Spacer(1, 4))
-            elif s.startswith("## "):
-                elements.append(Paragraph(_md(s[3:]), h1_s))
-            elif s.startswith("### "):
-                elements.append(Paragraph(_md(s[4:]), h2_s))
-            elif s.startswith("- "):
-                elements.append(Paragraph(f"\u2022 {_md(s[2:])}", bullet_s))
-            else:
-                elements.append(Paragraph(_md(s), body_s))
-
-        tdata = result.get("table_data")
-        tcols = result.get("table_columns")
-        if tdata and tcols:
-            elements.append(Spacer(1, 12))
-            elements.append(Paragraph("Findings", h1_s))
-            elements.append(HRFlowable(width="100%", thickness=1,
-                                       color=colors.HexColor("#ccc"), spaceAfter=6))
-
-            SEV_COLORS = {
-                "Critical": colors.HexColor("#ffe0e0"),
-                "Major": colors.HexColor("#fff3cd"),
-                "Minor": colors.HexColor("#fffde0"),
-                "Suggestion": colors.HexColor("#e8f5e9"),
-            }
-            PRESET = {"#": 0.05, "Section": 0.14, "Severity": 0.10,
-                      "Finding": 0.33, "Recommendation": 0.33}
-            total_w = 17 * cm
-            col_ws = [PRESET.get(c, 1 / len(tcols)) * total_w for c in tcols]
-            factor = total_w / sum(col_ws)
-            col_ws = [w * factor for w in col_ws]
-
-            hdr = [Paragraph(f"<b>{c}</b>", body_s) for c in tcols]
-            rows = [hdr]
-            row_bg_styles = []
-            for ri, row in enumerate(tdata, 1):
-                sev = str(row.get("Severity", "")).title()
-                cells = [Paragraph(_md(str(row.get(c, ""))), body_s) for c in tcols]
-                rows.append(cells)
-                bg = SEV_COLORS.get(sev)
-                if bg:
-                    row_bg_styles.append(("BACKGROUND", (0, ri), (-1, ri), bg))
-
-            tbl = Table(rows, colWidths=col_ws, repeatRows=1)
-            tbl.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ccc")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ] + row_bg_styles))
-            elements.append(tbl)
-
-        doc.build(elements)
-        buf.seek(0)
-        return buf
-
-    except ImportError:
-        txt = "Protocol Analysis Report\n" + "=" * 40 + "\n\n"
-        txt += result.get("text", "")
-        return io.BytesIO(txt.encode("utf-8"))
-    except Exception as e:
-        return io.BytesIO(f"PDF generation error: {e}".encode())
-
-
-# =========================================================================
 # build_app — the single public entry point
 # =========================================================================
 
@@ -402,9 +273,8 @@ def build_app(orchestrator, session_store):
     )
     update_trace_log = _make_trace_updater(orchestrator, trace_content)
 
-    # -- State: export / protocol result ----------------------------------------
-    _state = {"result_id": None, "table_data": None, "table_columns": None,
-              "protocol_result": None}
+    # -- State: export result ---------------------------------------------------
+    _state = {"result_id": None, "table_data": None, "table_columns": None}
 
     # -- Widgets: export bar ----------------------------------------------------
     export_input = pn.widgets.TextInput(placeholder="Dataiku dataset name\u2026", width=260)
@@ -418,25 +288,6 @@ def build_app(orchestrator, session_store):
         styles={"background": "#f0f4ff", "padding": "8px", "border-radius": "6px"},
     )
 
-    # -- Widgets: protocol PDF download -----------------------------------------
-    proto_pdf_btn = pn.widgets.FileDownload(
-        label="\u2b07  Download Analysis PDF",
-        button_type="primary",
-        filename="protocol_analysis.pdf",
-        callback=lambda: generate_protocol_pdf(_state["protocol_result"]),
-        embed=False, width=230, margin=(0, 0, 0, 0),
-    )
-    proto_pdf_row = pn.Row(
-        pn.pane.Markdown("\U0001f4c4 **Protocol Analysis ready:**",
-                         margin=(6, 10, 0, 0),
-                         styles={"font-size": "13px", "white-space": "nowrap"}),
-        proto_pdf_btn,
-        visible=False, sizing_mode="stretch_width",
-        styles={"background": "#e8f5e9", "padding": "8px 12px",
-                "border-bottom": "1px solid #c8e6c9"},
-        align="center",
-    )
-
     def _maybe_show_export(resp):
         if resp.get("result_id"):
             _state["result_id"] = resp["result_id"]
@@ -444,19 +295,6 @@ def build_app(orchestrator, session_store):
             _state["table_data"] = resp["table_data"]
             _state["table_columns"] = resp.get("table_columns")
             export_row.visible = True
-        if resp.get("skill_id") == "protocol_analysis":
-            st = session_store.get_or_create(session_id)
-            file_info = st.uploaded_files.get("protocol_file", {})
-            _state["protocol_result"] = {
-                "text": resp.get("message", ""),
-                "table_data": resp.get("table_data"),
-                "table_columns": resp.get("table_columns"),
-                "filename": file_info.get("filename", "protocol"),
-            }
-            proto_pdf_btn.filename = (
-                file_info.get("filename", "protocol").rsplit(".", 1)[0] + "_analysis.pdf"
-            )
-            proto_pdf_row.visible = True
 
     def _on_export(event):
         dataset_name = export_input.value.strip()
@@ -521,13 +359,11 @@ def build_app(orchestrator, session_store):
             "3. **Drug Reimbursement** \u2014 Assess reimbursement outlook by country  \n"
             "4. **Enrollment Forecasting** \u2014 Generate pessimistic / moderate / optimistic "
             "enrollment curves  \n"
-            "5. **Protocol Analysis** \u2014 Upload a protocol (PDF, DOCX, TXT) for a study "
-            "design review  \n"
-            "6. **Country Ranking** \u2014 Rank countries by trial experience for a given "
+            "5. **Country Ranking** \u2014 Rank countries by trial experience for a given "
             "indication  \n"
-            "7. **Enrollment Reforecasting** \u2014 View reforecast enrollment curves for a "
+            "6. **Enrollment Reforecasting** \u2014 View reforecast enrollment curves for a "
             "specific protocol  \n"
-            "8. **Competitive Intelligence** \u2014 Identify upcoming competitor trials "
+            "7. **Competitive Intelligence** \u2014 Identify upcoming competitor trials "
             "(not yet started) for a given indication, phase, and age group  \n\n"
             "After running any tool, you can ask me follow-up questions like:\n"
             "- *Based on this enrollment forecast, what is the best study design?*  \n"
@@ -569,45 +405,7 @@ def build_app(orchestrator, session_store):
 
     upload_cro.param.watch(_on_cro_upload, "value")
 
-    # -- File upload: protocol --------------------------------------------------
-    protocol_upload_widget = pn.widgets.FileInput(accept=".pdf,.docx,.txt", width=260)
-    protocol_upload_status = pn.pane.Markdown(
-        "", sizing_mode="stretch_width",
-        styles={"font-size": "12px", "color": "#444"},
-    )
-
-    def _on_protocol_upload(event):
-        if protocol_upload_widget.value is None:
-            return
-        filename = protocol_upload_widget.filename or "protocol"
-        try:
-            resp = orchestrator.handle_file_upload(
-                session_id, "protocol_file",
-                UploadedFile(file_key="protocol_file", filename=filename, data=protocol_upload_widget.value),
-            )
-            if resp.get("error"):
-                protocol_upload_status.object = f"\u26a0 **Upload error:** {resp['error']}"
-            else:
-                file_info = (
-                    session_store.get_or_create(session_id)
-                    .uploaded_files.get("protocol_file", {})
-                )
-                fmt = file_info.get("format", "txt")
-                if fmt == "pdf":
-                    size_desc = f"{file_info.get('total_pages', '?')} pages"
-                else:
-                    size_desc = f"{len(file_info.get('full_text', '')):,} characters"
-                protocol_upload_status.object = f"\u2705 **{filename}** \u2014 {size_desc}"
-                chat.send(
-                    resp.get("message", f"Protocol uploaded: **{filename}**."),
-                    user="Assistant", respond=False,
-                )
-        except Exception as e:
-            protocol_upload_status.object = f"\u26a0 **Upload error:** {e}"
-
-    protocol_upload_widget.param.watch(_on_protocol_upload, "value")
-
-    # -- Upload bars ------------------------------------------------------------
+    # -- Upload bar -------------------------------------------------------------
     upload_bar = pn.Row(
         pn.pane.Markdown(
             "\U0001f4c2 **CRO Site List** *(for CRO Site Profiling)*",
@@ -615,18 +413,6 @@ def build_app(orchestrator, session_store):
             styles={"font-size": "13px", "white-space": "nowrap"},
         ),
         upload_cro, upload_status,
-        sizing_mode="stretch_width",
-        styles={"background": "#f9f9f9", "padding": "8px 12px",
-                "border-bottom": "1px solid #e0e0e0"},
-        align="center",
-    )
-    protocol_upload_bar = pn.Row(
-        pn.pane.Markdown(
-            "\U0001f4c4 **Protocol** *(for Protocol Analysis)*",
-            margin=(6, 10, 0, 0),
-            styles={"font-size": "13px", "white-space": "nowrap"},
-        ),
-        protocol_upload_widget, protocol_upload_status,
         sizing_mode="stretch_width",
         styles={"background": "#f9f9f9", "padding": "8px 12px",
                 "border-bottom": "1px solid #e0e0e0"},
@@ -642,11 +428,9 @@ def build_app(orchestrator, session_store):
                     "margin": "0"},
         ),
         upload_bar,
-        protocol_upload_bar,
         chat_width_css,
         chat,
         export_row,
-        proto_pdf_row,
         pn.Column(
             pn.pane.Markdown("### LLM Call Trace", margin=(0, 0, 4, 0),
                              styles={"color": "#222"}),

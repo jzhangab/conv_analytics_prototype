@@ -13,7 +13,6 @@ _SKILL_VERB = {
     "trial_benchmarking": "run Trial Benchmarking",
     "drug_reimbursement": "run Drug Reimbursement Assessment",
     "enrollment_forecasting": "run Enrollment Forecasting",
-    "protocol_analysis": "run Protocol Analysis",
     "country_ranking": "run Country Ranking by Trial Experience",
     "reforecasting": "run Enrollment Reforecasting",
 }
