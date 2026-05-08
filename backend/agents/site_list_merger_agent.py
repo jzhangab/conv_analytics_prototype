@@ -9,6 +9,7 @@ Column mapping is inferred via LLM reasoning on column names.
 For matched sites, calculates performance metrics from the CTMS dataset:
   - Avg Enrolled: average of the ENROLLED column across all rows for that site
   - Median Months Diff: median of the MONTHS_DIFF column across all rows for that site
+  - % Non-Enrolling Trials: % of rows for that site where randomized patients == 0
 
 Performance notes
 -----------------
@@ -240,43 +241,67 @@ class CROSiteProfilingAgent(BaseAgent):
         ctms_df: pd.DataFrame,
         id_col: str | None,
     ) -> dict:
-        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff}."""
+        """Return a pre-aggregated lookup: ctms_idx -> {avg_enrolled, median_months_diff, pct_non_enrolling}."""
         col_lower = {c.lower(): c for c in ctms_df.columns}
-        enrolled_col = col_lower.get("enrolled")
+        enrolled_col    = col_lower.get("enrolled")
         months_diff_col = col_lower.get("months_diff")
+        # Accept any column whose name contains "random" (e.g. randomized, randomized_patients)
+        randomized_col  = next(
+            (c for lower, c in sorted(col_lower.items()) if "random" in lower), None
+        )
 
-        cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col)
+        cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col, randomized_col)
         if cache_key in _ctms_metrics_cache:
             logger.info("Site metrics cache hit.")
             return _ctms_metrics_cache[cache_key]
 
-        if enrolled_col is None and months_diff_col is None:
-            logger.warning("CTMS dataset has neither ENROLLED nor MONTHS_DIFF columns; skipping metrics.")
+        if enrolled_col is None and months_diff_col is None and randomized_col is None:
+            logger.warning("CTMS dataset has no recognised metric columns; skipping metrics.")
             _ctms_metrics_cache[cache_key] = {}
             return {}
 
         if id_col and id_col in ctms_df.columns:
+            # Standard aggregations (only when there are columns to aggregate)
             agg_cols: dict[str, str] = {}
             if enrolled_col:
                 agg_cols[enrolled_col] = "mean"
             if months_diff_col:
                 agg_cols[months_diff_col] = "median"
 
-            grouped = ctms_df.groupby(id_col, dropna=False).agg(agg_cols)
+            grouped = (
+                ctms_df.groupby(id_col, dropna=False).agg(agg_cols)
+                if agg_cols else None
+            )
+
+            # % non-enrolling: rows where randomized == 0 / total rows per site
+            # Computed independently so it works even when agg_cols is empty.
+            non_enrolling_pct: pd.Series | None = None
+            if randomized_col:
+                is_zero     = ctms_df[randomized_col].eq(0)    # NaN → False, not counted
+                zero_count  = is_zero.groupby(ctms_df[id_col]).sum()
+                total_count = ctms_df.groupby(id_col).size()
+                non_enrolling_pct = (zero_count / total_count * 100).round(1)
+
             lookup: dict[int, dict] = {}
             for c_idx in ctms_df.index:
                 site_id_val = ctms_df.at[c_idx, id_col]
-                if pd.isna(site_id_val) or site_id_val not in grouped.index:
+                if pd.isna(site_id_val):
                     lookup[c_idx] = {}
                     continue
-                grp = grouped.loc[site_id_val]
                 m: dict = {}
-                if enrolled_col and pd.notna(grp[enrolled_col]):
-                    m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
-                if months_diff_col and pd.notna(grp[months_diff_col]):
-                    m["median_months_diff"] = round(float(grp[months_diff_col]), 2)
+                if grouped is not None and site_id_val in grouped.index:
+                    grp = grouped.loc[site_id_val]
+                    if enrolled_col and pd.notna(grp[enrolled_col]):
+                        m["avg_enrolled"] = round(float(grp[enrolled_col]), 2)
+                    if months_diff_col and pd.notna(grp[months_diff_col]):
+                        m["median_months_diff"] = round(float(grp[months_diff_col]), 2)
+                if non_enrolling_pct is not None and site_id_val in non_enrolling_pct.index:
+                    pct = non_enrolling_pct.loc[site_id_val]
+                    if pd.notna(pct):
+                        m["pct_non_enrolling"] = float(pct)
                 lookup[c_idx] = m
         else:
+            # No site ID column — per-row values only; % non-enrolling requires grouping
             lookup = {}
             for c_idx in ctms_df.index:
                 row = ctms_df.iloc[c_idx]
@@ -465,8 +490,8 @@ class CROSiteProfilingAgent(BaseAgent):
             f"- **Step 2** (address + city, JW > {STEP2_THRESHOLD}): **{n_step2}** additional matches\n"
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
             f"- **Unmatched: {n_unmatched}**\n\n"
-            f"For matched sites, **Avg Enrolled** and **Median Months Diff** are calculated "
-            f"from all rows of the matched site in the CTMS dataset."
+            f"For matched sites, **Avg Enrolled**, **Median Months Diff**, and "
+            f"**% Non-Enrolling Trials** are calculated from all rows of the matched site in the CTMS dataset."
         )
 
         # --- Build result table ---
@@ -491,26 +516,28 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Match Status":       "Matched",
                     "JW Score":           match["score"],
                     "Match Step":         match["step"],
-                    "Avg Enrolled":       metrics.get("avg_enrolled", ""),
-                    "Median Months Diff":    metrics.get("median_months_diff", ""),
+                    "Avg Enrolled":           metrics.get("avg_enrolled", ""),
+                    "Median Months Diff":     metrics.get("median_months_diff", ""),
+                    "% Non-Enrolling Trials": metrics.get("pct_non_enrolling", ""),
                 })
             else:
                 table_data.append({
-                    "Row":                i + 1,
-                    "Uploaded Site Name": u_name,
-                    "CTMS Site Name":     "",
-                    "CTMS Site ID":       "",
-                    "Match Status":       "Not matched",
-                    "JW Score":           "",
-                    "Match Step":         "",
-                    "Avg Enrolled":       "",
-                    "Median Months Diff":    "",
+                    "Row":                    i + 1,
+                    "Uploaded Site Name":     u_name,
+                    "CTMS Site Name":         "",
+                    "CTMS Site ID":           "",
+                    "Match Status":           "Not matched",
+                    "JW Score":               "",
+                    "Match Step":             "",
+                    "Avg Enrolled":           "",
+                    "Median Months Diff":     "",
+                    "% Non-Enrolling Trials": "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
-            "Avg Enrolled", "Median Months Diff",
+            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials",
         ]
 
         return AgentResult(
