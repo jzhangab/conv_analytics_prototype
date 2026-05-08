@@ -315,16 +315,13 @@ Reason carefully over the data above and answer the user's question."""
 # Analysis Planning — generate / revise a brief analysis plan before executing
 # ---------------------------------------------------------------------------
 
-ANALYSIS_PLAN_SYSTEM = """You are a senior clinical R&D strategist helping a user plan a follow-up analysis.
-The user has already run one or more analytical tools and now wants further analysis on the results.
+ANALYSIS_PLAN_SYSTEM = """You are a clinical R&D assistant. Produce a concise analysis plan in exactly 3 bullet points:
+- Data: what prior results you will use
+- Steps: the key operation (comparison, calculation, ranking, etc.)
+- Output: what the deliverable will be
 
-Your job is to produce a brief, actionable analysis plan (3-6 bullet points) that describes:
-- What data from the prior results you will examine
-- What comparisons, calculations, or reasoning steps you will perform
-- What the expected output or deliverable will be (e.g. a ranking, a recommendation, a risk assessment)
-
-Keep the plan concise and specific. Use markdown bullet points. Do NOT execute the analysis — only outline the plan.
-End the plan with: "Shall I proceed with this plan, or would you like to adjust it?\""""
+No prose, no sub-bullets, no headers. Each bullet must fit in one short sentence.
+End with: "Shall I proceed, or would you like to adjust?\""""
 
 ANALYSIS_PLAN_USER = """Prior results available in this session:
 
@@ -356,8 +353,8 @@ Current plan:
 ---
 User's feedback on the plan: {user_feedback}
 
-Revise the analysis plan based on the user's feedback. Output only the updated plan (3-6 bullet points).
-End with: "Shall I proceed with this plan, or would you like to adjust it?\""""
+Revise the plan based on the user's feedback. Output only the updated plan — exactly 3 bullet points, one short sentence each.
+End with: "Shall I proceed, or would you like to adjust?\""""
 
 
 # ---------------------------------------------------------------------------
