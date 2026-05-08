@@ -15,6 +15,7 @@ import panel as pn
 from panel.chat import ChatInterface
 
 from backend.agents.site_list_merger_agent import parse_uploaded_file
+from backend.api.models import UploadedFile
 from backend.state.conversation_state import FSMState
 
 
@@ -381,19 +382,6 @@ def generate_protocol_pdf(result):
 
 
 # =========================================================================
-# Fake file-storage adapter (Panel FileInput → parse_uploaded_file)
-# =========================================================================
-
-class _FakeFileStorage:
-    def __init__(self, filename, data):
-        self.filename = filename
-        self._data = data
-
-    def read(self):
-        return self._data
-
-
-# =========================================================================
 # build_app — the single public entry point
 # =========================================================================
 
@@ -560,7 +548,7 @@ def build_app(orchestrator, session_store):
             return
         filename = upload_cro.filename or "upload"
         try:
-            parsed = parse_uploaded_file(_FakeFileStorage(filename, upload_cro.value))
+            parsed = parse_uploaded_file(UploadedFile(file_key="site_file", filename=filename, data=upload_cro.value))
             state = session_store.get_or_create(session_id)
             state.uploaded_files["site_file"] = parsed
             state.active_skill = "cro_site_profiling"
@@ -593,7 +581,7 @@ def build_app(orchestrator, session_store):
         try:
             resp = orchestrator.handle_file_upload(
                 session_id, "protocol_file",
-                _FakeFileStorage(filename, protocol_upload_widget.value),
+                UploadedFile(file_key="protocol_file", filename=filename, data=protocol_upload_widget.value),
             )
             if resp.get("error"):
                 protocol_upload_status.object = f"\u26a0 **Upload error:** {resp['error']}"
