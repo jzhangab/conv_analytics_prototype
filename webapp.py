@@ -1,160 +1,244 @@
 """
-Dataiku Webapp entry point (Flask).
-Deploy this as a "Code webapp" in Dataiku DSS with backend type = Flask.
+Flask HTTP adapter.
 
-Routes:
-  GET  /            → Chat UI
-  POST /chat        → Send a text message
-  POST /upload      → Upload a site list file (CSV/Excel)
-  POST /confirm     → Explicit confirm/cancel/edit (used by confirm_dialog.js)
-  POST /export      → Write result to a Dataiku dataset
-  GET  /healthz     → Startup health check (returns init error if any)
+This file is intentionally thin.  Its only job is to translate HTTP requests
+into ChatRequest objects, call backend.process(), and return the ChatResponse
+as JSON.  All business logic lives in backend/api/chat_backend.py.
+
+Routes
+------
+  POST /api/interact   — unified endpoint for the React frontend
+  GET  /healthz        — startup health check
+  GET  /               — React SPA stub (serve index.html or redirect)
+
+Legacy routes (kept for the existing Dataiku frontend during migration):
+  POST /chat    →  action="message"
+  POST /upload  →  action="upload"
+  POST /confirm →  action="confirm"
+  POST /export  →  action="export"
 """
 import logging
 import os
-import traceback
 import uuid
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+
+from backend.api.chat_backend import ChatBackend
+from backend.api.models import ChatRequest, UploadedFile
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-def _serialize_response(response: dict) -> dict:
-    """Convert any non-JSON-serializable objects in the response (e.g. Bokeh Figure) before jsonify."""
-    chart = response.get("chart_json")
-    if chart is not None and not isinstance(chart, dict):
-        from bokeh.embed import json_item
-        response = {**response, "chart_json": json_item(chart, "enrollment_chart")}
-    return response
-
-app = Flask(
-    __name__,
-    template_folder="frontend/templates",
-    static_folder="frontend/static",
-)
+app = Flask(__name__, static_folder="frontend/static")
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-me-in-prod")
+CORS(app, origins=os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(","))
 
 # ---------------------------------------------------------------------------
-# Lazy initialization — deferred until first request so that import-time
-# errors surface as readable JSON rather than a silent 500.
+# Single ChatBackend instance — initialized lazily on first request so that
+# startup errors surface as readable JSON rather than a silent crash.
 # ---------------------------------------------------------------------------
-_session_store = None
-_orchestrator = None
-_init_error = None
+_backend: ChatBackend | None = None
+_init_error: str | None = None
 
 
-def _get_orchestrator():
-    global _session_store, _orchestrator, _init_error
-    if _orchestrator is not None:
-        return _orchestrator, None
+def _get_backend() -> tuple[ChatBackend | None, str | None]:
+    global _backend, _init_error
+    if _backend is not None:
+        return _backend, None
     if _init_error is not None:
         return None, _init_error
     try:
-        from backend.orchestrator.orchestrator import Orchestrator
-        from backend.state.session_store import SessionStore
-        _session_store = SessionStore(timeout_minutes=30)
-        _orchestrator = Orchestrator(_session_store)
-        logger.info("Orchestrator initialized successfully.")
-        return _orchestrator, None
+        _backend = ChatBackend()
+        return _backend, None
     except Exception:
+        import traceback
         _init_error = traceback.format_exc()
-        logger.error("Orchestrator initialization failed:\n%s", _init_error)
+        logger.error("ChatBackend init failed:\n%s", _init_error)
         return None, _init_error
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+def _guard() -> tuple[ChatBackend | None, dict | None]:
+    """Return (backend, None) on success or (None, error_response) on failure."""
+    backend, err = _get_backend()
+    if err:
+        return None, ({"success": False, "error": f"Backend init failed: {err}"}, 500)
+    return backend, None
 
-@app.route("/")
-def index():
-    return render_template("index.html")
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 @app.route("/healthz")
 def healthz():
-    orch, err = _get_orchestrator()
+    _, err = _get_backend()
     if err:
         return jsonify({"status": "error", "detail": err}), 500
     return jsonify({"status": "ok"})
 
 
+# ---------------------------------------------------------------------------
+# SPA stub — remove or replace with your React build's index.html
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    # If React is built into frontend/static, serve it.  Otherwise 204.
+    static_index = os.path.join(app.static_folder, "index.html")
+    if os.path.exists(static_index):
+        return send_from_directory(app.static_folder, "index.html")
+    return ("", 204)
+
+
+# ---------------------------------------------------------------------------
+# Unified endpoint (React frontend)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/interact", methods=["POST"])
+def interact():
+    """
+    Single endpoint for all React frontend interactions.
+
+    JSON body for action="message" | "confirm" | "export":
+        { "session_id": "...", "action": "...", ...action-specific fields... }
+
+    Multipart form-data for action="upload":
+        session_id=..., file_key=..., <file_key>=<file bytes>
+    """
+    backend, err_resp = _guard()
+    if err_resp:
+        return jsonify(err_resp[0]), err_resp[1]
+
+    content_type = request.content_type or ""
+    if "multipart/form-data" in content_type:
+        req, bad = _parse_upload_request()
+    else:
+        req, bad = _parse_json_request()
+
+    if bad:
+        return jsonify(bad[0]), bad[1]
+
+    return jsonify(backend.process(req).to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Legacy routes (backward-compatible with the existing Dataiku frontend)
+# Remove these once the React frontend is fully wired up.
+# ---------------------------------------------------------------------------
+
 @app.route("/chat", methods=["POST"])
-def chat():
-    orch, err = _get_orchestrator()
-    if err:
-        return jsonify({"error": f"Backend failed to initialize: {err}"}), 500
-
-    data = request.get_json(force=True)
-    session_id = data.get("session_id") or str(uuid.uuid4())
-    user_message = (data.get("message") or "").strip()
-
-    if not user_message:
-        return jsonify({"error": "Empty message"}), 400
-
-    response = orch.process_message(session_id, user_message)
-    return jsonify({"session_id": session_id, **_serialize_response(response)})
+def chat_legacy():
+    backend, err_resp = _guard()
+    if err_resp:
+        return jsonify(err_resp[0]), err_resp[1]
+    data = request.get_json(force=True) or {}
+    req = ChatRequest(
+        session_id=data.get("session_id") or str(uuid.uuid4()),
+        action="message",
+        message=data.get("message", ""),
+    )
+    return jsonify(backend.process(req).to_dict())
 
 
 @app.route("/upload", methods=["POST"])
-def upload():
-    orch, err = _get_orchestrator()
-    if err:
-        return jsonify({"error": f"Backend failed to initialize: {err}"}), 500
+def upload_legacy():
+    backend, err_resp = _guard()
+    if err_resp:
+        return jsonify(err_resp[0]), err_resp[1]
+    req, bad = _parse_upload_request()
+    if bad:
+        return jsonify(bad[0]), bad[1]
+    return jsonify(backend.process(req).to_dict())
 
+
+@app.route("/confirm", methods=["POST"])
+def confirm_legacy():
+    backend, err_resp = _guard()
+    if err_resp:
+        return jsonify(err_resp[0]), err_resp[1]
+    data = request.get_json(force=True) or {}
+    req = ChatRequest(
+        session_id=data.get("session_id") or str(uuid.uuid4()),
+        action="confirm",
+        confirmed=bool(data.get("confirmed", False)),
+        edit_params=data.get("edit_params"),
+    )
+    return jsonify(backend.process(req).to_dict())
+
+
+@app.route("/export", methods=["POST"])
+def export_legacy():
+    backend, err_resp = _guard()
+    if err_resp:
+        return jsonify(err_resp[0]), err_resp[1]
+    data = request.get_json(force=True) or {}
+    req = ChatRequest(
+        session_id=data.get("session_id") or str(uuid.uuid4()),
+        action="export",
+        result_id=data.get("result_id"),
+        export_destination=data.get("dataset_name") or data.get("table_name"),
+    )
+    return jsonify(backend.process(req).to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Request parsers
+# ---------------------------------------------------------------------------
+
+def _parse_json_request() -> tuple[ChatRequest | None, tuple | None]:
+    data = request.get_json(force=True) or {}
+    action = data.get("action", "message")
+    session_id = data.get("session_id") or str(uuid.uuid4())
+
+    if action == "message":
+        if not data.get("message"):
+            return None, ({"success": False, "error": "message field required"}, 400)
+        return ChatRequest(
+            session_id=session_id, action="message", message=data["message"]
+        ), None
+
+    if action == "confirm":
+        if data.get("confirmed") is None:
+            return None, ({"success": False, "error": "confirmed field required"}, 400)
+        return ChatRequest(
+            session_id=session_id, action="confirm",
+            confirmed=bool(data["confirmed"]), edit_params=data.get("edit_params"),
+        ), None
+
+    if action == "export":
+        return ChatRequest(
+            session_id=session_id, action="export",
+            result_id=data.get("result_id"),
+            export_destination=data.get("export_destination") or data.get("table_name"),
+        ), None
+
+    return None, ({"success": False, "error": f"Unknown action: {action!r}"}, 400)
+
+
+def _parse_upload_request() -> tuple[ChatRequest | None, tuple | None]:
     session_id = request.form.get("session_id") or str(uuid.uuid4())
     file_key = request.form.get("file_key", "")
 
     if file_key not in ("site_file", "protocol_file"):
-        return jsonify({"error": "file_key must be 'site_file' or 'protocol_file'"}), 400
+        return None, (
+            {"success": False, "error": "file_key must be 'site_file' or 'protocol_file'"}, 400
+        )
+    if file_key not in request.files or not request.files[file_key].filename:
+        return None, ({"success": False, "error": "No file provided"}, 400)
 
-    if file_key not in request.files or request.files[file_key].filename == "":
-        return jsonify({"error": "No file provided"}), 400
-
-    response = orch.handle_file_upload(session_id, file_key, request.files[file_key])
-    return jsonify({"session_id": session_id, **response})
-
-
-@app.route("/confirm", methods=["POST"])
-def confirm():
-    orch, err = _get_orchestrator()
-    if err:
-        return jsonify({"error": f"Backend failed to initialize: {err}"}), 500
-
-    data = request.get_json(force=True)
-    session_id = data.get("session_id")
-    confirmed = bool(data.get("confirmed", False))
-    edit_params = data.get("edit_params")
-
-    if not session_id:
-        return jsonify({"error": "Missing session_id"}), 400
-
-    response = orch.handle_confirmation(session_id, confirmed, edit_params)
-    return jsonify({"session_id": session_id, **_serialize_response(response)})
-
-
-@app.route("/export", methods=["POST"])
-def export():
-    orch, err = _get_orchestrator()
-    if err:
-        return jsonify({"error": f"Backend failed to initialize: {err}"}), 500
-
-    data = request.get_json(force=True)
-    session_id = data.get("session_id")
-    result_id = data.get("result_id")
-    dataset_name = data.get("dataset_name", "").strip()
-
-    if not session_id or not result_id or not dataset_name:
-        return jsonify({"error": "Missing session_id, result_id, or dataset_name"}), 400
-
-    response = orch.export_to_dataset(session_id, result_id, dataset_name)
-    return jsonify({"session_id": session_id, **response})
+    fs = request.files[file_key]
+    uploaded = UploadedFile(
+        file_key=file_key,
+        filename=fs.filename,
+        data=fs.read(),
+        content_type=fs.content_type or "application/octet-stream",
+    )
+    return ChatRequest(session_id=session_id, action="upload", files=[uploaded]), None
 
 
 # ---------------------------------------------------------------------------
-# Dataiku webapp entry point
+# Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
