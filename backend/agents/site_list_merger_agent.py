@@ -13,6 +13,9 @@ For matched sites, calculates performance metrics from the CTMS dataset:
   - Trial Experience: total number of rows (trials) for that site
   - Screen Failure Rate: median across all rows for that site of (SCREENFAILED/SCREENED*100);
     rows where SCREENED is 0 or NaN count as 1.0 (i.e. 100%)
+  - Avg Major PDs per Patient: mean across all rows for that site of
+    (major_protocol_deviations / randomized_patients); rows where randomized_patients
+    is 0 or NaN are excluded from the average
 
 Performance notes
 -----------------
@@ -53,7 +56,7 @@ from backend.utils.string_matching import jaro_winkler_similarity
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CTMS_DATASET = "CTMS_DATASET"
+DEFAULT_CTMS_DATASET = "CTMS_DATASET_JOIN_ISSUE_DATASET"
 
 STEP1_THRESHOLD = 0.90
 STEP2_THRESHOLD = 0.88
@@ -250,19 +253,20 @@ class CROSiteProfilingAgent(BaseAgent):
         months_diff_col  = col_lower.get("months_diff")
         screened_col     = col_lower.get("screened")
         screenfailed_col = col_lower.get("screenfailed") or col_lower.get("screen_failed")
+        major_pd_col     = col_lower.get("major_protocol_deviations") or col_lower.get("major_pd")
         # Accept any column whose name contains "random" (e.g. randomized, randomized_patients)
         randomized_col   = next(
             (c for lower, c in sorted(col_lower.items()) if "random" in lower), None
         )
 
         cache_key = (self.dataset_name, id_col, enrolled_col, months_diff_col,
-                     randomized_col, screened_col, screenfailed_col)
+                     randomized_col, screened_col, screenfailed_col, major_pd_col)
         if cache_key in _ctms_metrics_cache:
             logger.info("Site metrics cache hit.")
             return _ctms_metrics_cache[cache_key]
 
         if enrolled_col is None and months_diff_col is None and randomized_col is None \
-                and screened_col is None and screenfailed_col is None:
+                and screened_col is None and screenfailed_col is None and major_pd_col is None:
             logger.warning("CTMS dataset has no recognised metric columns; skipping metrics.")
             _ctms_metrics_cache[cache_key] = {}
             return {}
@@ -302,6 +306,16 @@ class CROSiteProfilingAgent(BaseAgent):
                 per_row_rate     = (screenfailed_vals / screened_safe).fillna(1.0) * 100
                 screen_failure_median = per_row_rate.groupby(ctms_df[id_col]).median().round(1)
 
+            # Avg major protocol deviations per patient:
+            # mean of (major_pd / randomized) per row; rows where randomized is 0 or NaN excluded.
+            avg_major_pd: pd.Series | None = None
+            if major_pd_col and randomized_col:
+                rand_vals   = pd.to_numeric(ctms_df[randomized_col], errors="coerce")
+                mpd_vals    = pd.to_numeric(ctms_df[major_pd_col],   errors="coerce")
+                rand_safe   = rand_vals.where(rand_vals > 0)          # 0 → NaN → excluded
+                per_row_mpd = mpd_vals / rand_safe
+                avg_major_pd = per_row_mpd.groupby(ctms_df[id_col]).mean().round(4)
+
             lookup: dict[int, dict] = {}
             for c_idx in ctms_df.index:
                 site_id_val = ctms_df.at[c_idx, id_col]
@@ -325,6 +339,10 @@ class CROSiteProfilingAgent(BaseAgent):
                     sfr = screen_failure_median.loc[site_id_val]
                     if pd.notna(sfr):
                         m["screen_failure_rate"] = float(sfr)
+                if avg_major_pd is not None and site_id_val in avg_major_pd.index:
+                    mpd = avg_major_pd.loc[site_id_val]
+                    if pd.notna(mpd):
+                        m["avg_major_pd_per_patient"] = float(mpd)
                 lookup[c_idx] = m
         else:
             # No site ID column — per-row values only; % non-enrolling requires grouping
@@ -339,12 +357,17 @@ class CROSiteProfilingAgent(BaseAgent):
                     val = row[months_diff_col]
                     m["median_months_diff"] = round(float(val), 2) if pd.notna(val) else ""
                 if screened_col is not None and screenfailed_col is not None:
-                    screened_val    = pd.to_numeric(row.get(screened_col),    errors="coerce")
+                    screened_val     = pd.to_numeric(row.get(screened_col),    errors="coerce")
                     screenfailed_val = pd.to_numeric(row.get(screenfailed_col), errors="coerce")
                     if pd.isna(screened_val) or screened_val == 0:
                         m["screen_failure_rate"] = 100.0
                     else:
                         m["screen_failure_rate"] = round(float(screenfailed_val / screened_val * 100), 1)
+                if major_pd_col is not None and randomized_col is not None:
+                    rand_val = pd.to_numeric(row.get(randomized_col), errors="coerce")
+                    mpd_val  = pd.to_numeric(row.get(major_pd_col),   errors="coerce")
+                    if pd.notna(rand_val) and rand_val > 0 and pd.notna(mpd_val):
+                        m["avg_major_pd_per_patient"] = round(float(mpd_val / rand_val), 4)
                 lookup[c_idx] = m
 
         logger.info("Pre-aggregated site metrics for dataset '%s'; caching.", self.dataset_name)
@@ -524,8 +547,8 @@ class CROSiteProfilingAgent(BaseAgent):
             f"- **Total matched: {n_matched}** ({match_rate}%)\n"
             f"- **Unmatched: {n_unmatched}**\n\n"
             f"For matched sites, **Avg Enrolled**, **Median Months Diff**, "
-            f"**% Non-Enrolling Trials**, **Trial Experience**, and **Screen Failure Rate** "
-            f"are calculated from all rows of the matched site in the CTMS dataset."
+            f"**% Non-Enrolling Trials**, **Trial Experience**, **Screen Failure Rate**, "
+            f"and **Avg Major PDs per Patient** are calculated from all rows of the matched site in the CTMS dataset."
         )
 
         # --- Build result table ---
@@ -553,29 +576,32 @@ class CROSiteProfilingAgent(BaseAgent):
                     "Avg Enrolled":           metrics.get("avg_enrolled", ""),
                     "Median Months Diff":     metrics.get("median_months_diff", ""),
                     "% Non-Enrolling Trials": metrics.get("pct_non_enrolling", ""),
-                    "Trial Experience":       metrics.get("trial_experience", ""),
-                    "Screen Failure Rate":    metrics.get("screen_failure_rate", ""),
+                    "Trial Experience":          metrics.get("trial_experience", ""),
+                    "Screen Failure Rate":       metrics.get("screen_failure_rate", ""),
+                    "Avg Major PDs per Patient": metrics.get("avg_major_pd_per_patient", ""),
                 })
             else:
                 table_data.append({
-                    "Row":                    i + 1,
-                    "Uploaded Site Name":     u_name,
-                    "CTMS Site Name":         "",
-                    "CTMS Site ID":           "",
-                    "Match Status":           "Not matched",
-                    "JW Score":               "",
-                    "Match Step":             "",
-                    "Avg Enrolled":           "",
-                    "Median Months Diff":     "",
-                    "% Non-Enrolling Trials": "",
-                    "Trial Experience":       "",
-                    "Screen Failure Rate":    "",
+                    "Row":                       i + 1,
+                    "Uploaded Site Name":        u_name,
+                    "CTMS Site Name":            "",
+                    "CTMS Site ID":              "",
+                    "Match Status":              "Not matched",
+                    "JW Score":                  "",
+                    "Match Step":                "",
+                    "Avg Enrolled":              "",
+                    "Median Months Diff":        "",
+                    "% Non-Enrolling Trials":    "",
+                    "Trial Experience":          "",
+                    "Screen Failure Rate":        "",
+                    "Avg Major PDs per Patient": "",
                 })
 
         table_columns = [
             "Row", "Uploaded Site Name", "CTMS Site Name",
             "Match Status", "CTMS Site ID", "JW Score", "Match Step",
-            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials", "Trial Experience", "Screen Failure Rate",
+            "Avg Enrolled", "Median Months Diff", "% Non-Enrolling Trials", "Trial Experience",
+            "Screen Failure Rate", "Avg Major PDs per Patient",
         ]
 
         return AgentResult(
