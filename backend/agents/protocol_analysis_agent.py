@@ -49,9 +49,9 @@ from backend.state.conversation_state import ConversationState
 logger = logging.getLogger(__name__)
 
 TOC_SCAN_PAGES  = 15         # PDF pages to scan for Table of Contents
-TOC_SCAN_CHARS  = 30_000     # chars to scan for TOC in DOCX/TXT
-MAX_SECTION_CHARS = 500_000  # hard cap per section analysis call (~167k tokens at 3 ch/tok)
-FALLBACK_CHARS  = 600_000    # max chars for single-call fallback analysis
+TOC_SCAN_CHARS  = 25_000     # char cap for TOC input (PDF and DOCX/TXT)
+MAX_SECTION_CHARS = 200_000  # hard cap per section analysis call (~65k tokens at worst-case 1 ch/tok)
+FALLBACK_CHARS  = 200_000    # max chars for single-call fallback (~65k tokens at worst-case 1 ch/tok)
 
 SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "suggestion": 3}
 
@@ -167,9 +167,10 @@ class ProtocolAnalysisAgent(BaseAgent):
         if fmt == "pdf":
             pages = file_info.get("pages", [])
             toc_pages = pages[:TOC_SCAN_PAGES]
-            return "\n\n--- Page Break ---\n\n".join(
+            raw = "\n\n--- Page Break ---\n\n".join(
                 f"[PDF page {i + 1}]\n{p}" for i, p in enumerate(toc_pages) if p.strip()
             )
+            return raw[:TOC_SCAN_CHARS]  # cap so dense PDFs don't breach the token limit
         else:
             full_text = file_info.get("full_text") or file_info.get("text", "")
             return full_text[:TOC_SCAN_CHARS]
