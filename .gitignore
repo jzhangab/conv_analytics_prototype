@@ -1,0 +1,23 @@
+# Architecture artifacts and generator scripts
+architecture_slides.html
+conv_analytics_architecture.pptx
+conv_analytics_flow_diagram.pdf
+conv_analytics_flow_diagram.png
+conv_analytics_notebook_flow.pdf
+conv_analytics_notebook_flow.png
+generate_flow_diagram.py
+generate_notebook_flow.py
+generate_pptx.py
+MIGRATION_GUIDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
